@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pcc"
+version = "0.1.0"
+description = "An experimental Python-to-C/C++ transpiler (MVP)."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Your Name" }]
+license = { text = "MIT" }
+dependencies = []
+
+[project.scripts]
+pcc = "pcc.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "."}
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["pcc*"]

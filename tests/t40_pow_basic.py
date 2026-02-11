@@ -1,0 +1,5 @@
+print(2 ** 3)
+print(5 ** 0)
+print(0 ** 5)
+print(0 ** 0)
+print(10 ** 1)
