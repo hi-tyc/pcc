@@ -1,4 +1,5 @@
-# PCC — Python to C/C++ Transpiler (MVP)
+# PCC — Python to C/C++ Transpiler 
+(Originally: MSVC VERSION {COMPILED} PYTHON)
 
 PCC (Python C Compiler) is an experimental project that transpiles a subset of Python into C/C++ code and produces native executables through a system compiler.
 
