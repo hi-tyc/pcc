@@ -415,13 +415,20 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 ## Roadmap
 
-- [ ] Float support
+- [x] Float support (float literals + arithmetic/comparison + print; int→float promotion in fast backend)
 - [ ] List/dict support
 - [ ] Exception handling
 - [ ] Module imports
 - [ ] Optimization passes
 - [ ] LLVM backend option
 - [ ] WebAssembly target
+
+
+### Float support notes
+
+- Supported in the **fast backend**: float literals (e.g. `1.5`, `2e-3`), `+ - * // %`, comparisons, and `print`.
+- Mixed int/float arithmetic is supported via **int → float promotion**.
+- The BigInt (HPF) backend currently supports floats, but **does not** support mixing `rt_int` with floats yet.
 
 ---
 

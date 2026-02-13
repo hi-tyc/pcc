@@ -7,7 +7,7 @@ It converts tokens into pcc's Intermediate Representation (IR).
 
 from typing import List, Set, Dict, Optional
 from ..ir import (
-    IntConst, StrConst, Var, BinOp, CmpOp, Call, AttributeAccess, MethodCall, ConstructorCall, BuiltinCall, Expr,
+    IntConst, FloatConst, StrConst, Var, BinOp, CmpOp, Call, AttributeAccess, MethodCall, ConstructorCall, BuiltinCall, Expr,
     Assign, AttrAssign, MethodCallStmt, Print, If, While, ForRange, Return, Break, Continue, Stmt,
     FunctionDef, ClassDef, ModuleIR
 )
@@ -693,12 +693,23 @@ class ParserV2:
         # Number literal
         if token.type == TokenType.NUMBER:
             self._advance()
+            raw = token.value
+            # Float if it contains '.' or exponent, otherwise int
+            if ('.' in raw) or ('e' in raw) or ('E' in raw):
+                try:
+                    value_f = float(raw)
+                except ValueError:
+                    raise ParseError(f"Invalid float: {raw}",
+                                   token.lineno, token.col_offset)
+                return FloatConst(value_f)
             try:
-                value = int(token.value)
+                value = int(raw)
             except ValueError:
-                raise ParseError(f"Invalid integer: {token.value}", 
+                raise ParseError(f"Invalid integer: {raw}",
                                token.lineno, token.col_offset)
             return IntConst(value)
+
+
         
         # String literal
         if token.type == TokenType.STRING:

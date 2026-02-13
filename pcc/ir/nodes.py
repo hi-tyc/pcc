@@ -21,6 +21,17 @@ class IntConst:
     value: int
 
 
+
+@dataclass(frozen=True)
+class FloatConst:
+    """Floating-point constant expression.
+
+    Attributes:
+        value: The float value (double precision)
+    """
+    value: float
+
+
 @dataclass(frozen=True)
 class StrConst:
     """String constant expression.
@@ -132,7 +143,7 @@ class BuiltinCall:
 
 
 # Union type for all expressions
-Expr = Union[IntConst, StrConst, Var, BinOp, CmpOp, Call, AttributeAccess, MethodCall, ConstructorCall, BuiltinCall]
+Expr = Union[IntConst, FloatConst, StrConst, Var, BinOp, CmpOp, Call, AttributeAccess, MethodCall, ConstructorCall, BuiltinCall]
 
 
 # ==================== Statements ====================
