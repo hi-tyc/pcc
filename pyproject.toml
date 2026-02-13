@@ -13,7 +13,7 @@ license = { text = "MIT" }
 dependencies = []
 
 [project.scripts]
-pcc = "pcc.cli:main"
+pcc = "pcc.__main__:main"
 
 [tool.setuptools]
 package-dir = {"" = "."}

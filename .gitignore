@@ -206,3 +206,14 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 .backup/
+
+# Project specific ignores
+# These are files that are generated during development or testing that should not be committed 
+# to version control.
+# Tests: 
+tests/**/*.exe
+*.exe
+
+# Object files and output directories:
+*.obj
+out*
