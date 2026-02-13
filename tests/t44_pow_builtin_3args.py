@@ -1,5 +1,0 @@
-print(pow(2, 3, 5))
-print(pow(5, 3, 13))
-print(pow(10, 2, 7))
-print(pow(3, 4, 10))
-print(pow(2, 10, 1000))

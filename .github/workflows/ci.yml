@@ -5,8 +5,8 @@ on:
   pull_request:
 
 jobs:
-  test-windows:
-    runs-on: windows-latest
+  test-ubuntu:
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -14,19 +14,21 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.13"
 
-      - name: Install (editable)
+      - name: Install Pip and dependencies
+        shell: bash
         run: |
           python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt pytest
           python -m pip install -e .
 
-      - name: Run tests (PowerShell script)
-        shell: pwsh
+      - name: Run tests (Python script)
+        shell: bash
         run: |
-          if (Test-Path "scripts/run_tests.ps1") {
-            ./scripts/run_tests.ps1
-          } else {
-            Write-Host "scripts/run_tests.ps1 not found. Please add your test runner script."
-            exit 1
-          }
+          python scripts/run_tests.py 
+
+      - name: Run tests (pytest)
+        shell: bash
+        run: |
+          python -m pytest tests/
