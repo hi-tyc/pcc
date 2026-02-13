@@ -33,5 +33,5 @@ jobs:
         shell: bash
         run: 
           source .venv/bin/activate |
-          pip install -r requirements-dev.txt |
-          pytest tests/
+          pip install -r requirements-dev.txt pytest |
+          python -m pytest tests/
