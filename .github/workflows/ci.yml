@@ -7,6 +7,16 @@ on:
 jobs:
   test-ubuntu:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+        include:
+          # Keep the newest Python in CI, but don't block merges while upstream
+          # ecosystem changes settle.
+          - python-version: "3.13"
+            experimental: true
+    continue-on-error: ${{ matrix.experimental || false }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -14,7 +24,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
+          python-version: ${{ matrix.python-version }}
 
       - name: Install Pip and dependencies
         shell: bash
