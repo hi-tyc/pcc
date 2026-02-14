@@ -430,11 +430,14 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 - Mixed int/float arithmetic is supported via **int → float promotion**.
 - The BigInt (HPF) backend currently supports floats, but **does not** support mixing `rt_int` with floats yet.
 
+<<<<<<< HEAD
 Additional HPF backend notes:
 
 - BigInt (`rt_int`) expressions now consistently evaluate to **pointers** (`rt_int*`) in generated C, matching the runtime API.
 - Basic class fixtures are supported in HPF mode (no-arg constructors, field access/assignment, and simple methods).
 
+=======
+>>>>>>> 6a19ffcdf73eb9eff11c818740ff107df8452199
 ---
 
 **Note**: This is an MVP (Minimum Viable Product) implementation. The supported Python subset is intentionally limited for simplicity and performance.

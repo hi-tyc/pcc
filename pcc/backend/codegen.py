@@ -179,11 +179,14 @@ def _emit_expr(
             return expr.name
         if ctype == "double":
             return expr.name
+<<<<<<< HEAD
         # Objects are represented as pointers (pcc_class_X*). In var_types we
         # store "pcc_class_X" as a tag, but the emitted C variable is still a
         # pointer. Do NOT take address-of in that case.
         if ctype.startswith("pcc_class_"):
             return expr.name
+=======
+>>>>>>> 6a19ffcdf73eb9eff11c818740ff107df8452199
         return f"&{expr.name}"
 
     if isinstance(expr, BinOp):
@@ -266,9 +269,15 @@ def _emit_expr(
             else:
                 raise ValueError(f"Unsupported binary operator: {expr.op}")
 
+<<<<<<< HEAD
             # All BigInt operations produce an rt_int temporary. Return it as a
             # pointer, consistent with other rt_int-producing expressions.
             return f"&{temp}"
+=======
+            return temp
+
+
+>>>>>>> 6a19ffcdf73eb9eff11c818740ff107df8452199
 
     if isinstance(expr, ConstructorCall):
         # Class constructor call: ClassName(...)
