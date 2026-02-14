@@ -10,8 +10,9 @@ from typing import List, Dict, Optional, Set, Tuple
 
 from ..ir import (
     ModuleIR, FunctionDef, ClassDef, Stmt, Expr,
-    IntConst, StrConst, Var, BinOp, CmpOp, Call, AttributeAccess, MethodCall, ConstructorCall, BuiltinCall,
-    Assign, AttrAssign, MethodCallStmt, Print, If, While, ForRange, Return, Break, Continue
+    IntConst, StrConst, ListConst, DictConst, Subscript,
+    Var, BinOp, CmpOp, Call, AttributeAccess, MethodCall, ConstructorCall, BuiltinCall,
+    Assign, AttrAssign, MethodCallStmt, Print, If, While, ForRange, TryExcept, Raise, Return, Break, Continue
 )
 
 
@@ -64,6 +65,24 @@ def _expr_produces_string(expr: Expr, var_types: Dict[str, str]) -> bool:
     return False
 
 
+def _expr_is_list(expr: Expr, var_types: Dict[str, str]) -> bool:
+    """True if expression is (or evaluates to) a PCC list."""
+    if isinstance(expr, ListConst):
+        return True
+    if isinstance(expr, Var):
+        return var_types.get(expr.name) == "rt_list_si"
+    return False
+
+
+def _expr_is_dict(expr: Expr, var_types: Dict[str, str]) -> bool:
+    """True if expression is (or evaluates to) a PCC dict."""
+    if isinstance(expr, DictConst):
+        return True
+    if isinstance(expr, Var):
+        return var_types.get(expr.name) == "rt_dict_ssi"
+    return False
+
+
 def _needs_hpf(expr: Expr) -> bool:
     """Check if expression needs HPF (value exceeds 64-bit range)."""
     if isinstance(expr, IntConst):
@@ -99,12 +118,46 @@ def _emit_expr(
         lines.append(f'    rt_str {temp} = rt_str_from_cstr("{escaped}");')
         return temp
 
+    if isinstance(expr, ListConst):
+        temp = state.next_temp(type_hint="rt_list_si")
+        lines.append(f"    rt_list_si {temp}; rt_list_si_init(&{temp});")
+        for e in expr.elements:
+            ev = _emit_expr(e, lines, state, var_types, fn_sigs)
+            lines.append(f"    rt_list_si_append(&{temp}, {ev});")
+        return temp
+
+    if isinstance(expr, DictConst):
+        temp = state.next_temp(type_hint="rt_dict_ssi")
+        lines.append(f"    rt_dict_ssi {temp}; rt_dict_ssi_init(&{temp});")
+        for k, v in zip(expr.keys, expr.values):
+            kv = _emit_expr(k, lines, state, var_types, fn_sigs)
+            vv = _emit_expr(v, lines, state, var_types, fn_sigs)
+            lines.append(f"    rt_dict_ssi_set(&{temp}, {kv}, {vv});")
+        return temp
+
+    if isinstance(expr, Subscript):
+        ctype = _ctype_for_var(expr.obj, var_types)
+        idx = _emit_expr(expr.index, lines, state, var_types, fn_sigs)
+        temp = state.next_temp(type_hint="long long")
+        lines.append(f"    long long {temp};")
+        if ctype == "rt_list_si":
+            lines.append(f"    {temp} = rt_list_si_get(&{expr.obj}, {idx});")
+            return temp
+        if ctype == "rt_dict_ssi":
+            lines.append(f"    {temp} = rt_dict_ssi_get(&{expr.obj}, {idx});")
+            return temp
+        raise ValueError(f"Subscript on unsupported type for {expr.obj}: {ctype}")
+
     if isinstance(expr, Var):
         ctype = _ctype_for_var(expr.name, var_types)
         if ctype == "rt_str":
             return expr.name
         elif ctype == "rt_int":
             return f"&{expr.name}"
+        elif ctype == "rt_list_si":
+            return expr.name
+        elif ctype == "rt_dict_ssi":
+            return expr.name
         else:
             # long long - return directly
             return expr.name
@@ -143,6 +196,7 @@ def _emit_expr(
             elif expr.op == "*":
                 lines.append(f"    {temp} = {left} * {right};")
             elif expr.op == "//":
+                lines.append(f"    if ({right} == 0) RT_RAISE(RT_EXC_ZeroDivisionError, \"division by zero\");")
                 # Python floor division: floor(a / b)
                 # C truncates toward zero, so we need to adjust for negative results
                 lines.append(f"    {temp} = {left} / {right};")
@@ -150,6 +204,7 @@ def _emit_expr(
                 lines.append(f"        {temp} -= 1;")
                 lines.append(f"    }}")
             elif expr.op == "%":
+                lines.append(f"    if ({right} == 0) RT_RAISE(RT_EXC_ZeroDivisionError, \"modulo by zero\");")
                 # Python modulo: result has same sign as divisor (always non-negative for positive divisor)
                 # C's % has same sign as dividend
                 lines.append(f"    {temp} = {left} % {right};")
@@ -245,12 +300,19 @@ def _emit_builtin_call(
         arg_exprs.append(arg_expr)
     
     if expr.name == 'len':
-        # len() returns the length of a string
-        # For now, only support string length
+        arg_expr = expr.args[0]
         arg = arg_exprs[0]
         temp = state.next_temp(type_hint="long long")
-        lines.append(f"    long long {temp} = rt_str_len(&{arg});")
-        return temp
+        if _expr_produces_string(arg_expr, var_types):
+            lines.append(f"    long long {temp} = (long long)rt_str_len(&{arg});")
+            return temp
+        if _expr_is_list(arg_expr, var_types):
+            lines.append(f"    long long {temp} = (long long)rt_list_si_len(&{arg});")
+            return temp
+        if _expr_is_dict(arg_expr, var_types):
+            lines.append(f"    long long {temp} = (long long)rt_dict_ssi_len(&{arg});")
+            return temp
+        raise ValueError("len() only supports str/list/dict in this PCC version")
     
     elif expr.name == 'abs':
         # abs() returns absolute value
@@ -331,6 +393,17 @@ def _emit_stmt(
     continue_label: Optional[str] = None
 ) -> None:
     """Emit code for a statement."""
+
+    def _exc_enum(exc_name: str) -> str:
+        mapping = {
+            "Exception": "RT_EXC_Exception",
+            "ZeroDivisionError": "RT_EXC_ZeroDivisionError",
+            "IndexError": "RT_EXC_IndexError",
+            "KeyError": "RT_EXC_KeyError",
+            "TypeError": "RT_EXC_TypeError",
+            "ValueError": "RT_EXC_ValueError",
+        }
+        return mapping.get(exc_name, "RT_EXC_Exception")
     
     if isinstance(stmt, Assign):
         expr_result = _emit_expr(stmt.expr, lines, state, var_types, fn_sigs)
@@ -351,9 +424,21 @@ def _emit_stmt(
             if isinstance(stmt.expr, StrConst):
                 var_types[stmt.name] = "rt_str"
                 lines.append(f"    rt_str {stmt.name} = {expr_result};")
+            elif isinstance(stmt.expr, ListConst):
+                var_types[stmt.name] = "rt_list_si"
+                lines.append(f"    rt_list_si {stmt.name} = {expr_result};")
+            elif isinstance(stmt.expr, DictConst):
+                var_types[stmt.name] = "rt_dict_ssi"
+                lines.append(f"    rt_dict_ssi {stmt.name} = {expr_result};")
             elif _expr_produces_string(stmt.expr, var_types):
                 var_types[stmt.name] = "rt_str"
                 lines.append(f"    rt_str {stmt.name} = {expr_result};")
+            elif _expr_is_list(stmt.expr, var_types):
+                var_types[stmt.name] = "rt_list_si"
+                lines.append(f"    rt_list_si {stmt.name} = {expr_result};")
+            elif _expr_is_dict(stmt.expr, var_types):
+                var_types[stmt.name] = "rt_dict_ssi"
+                lines.append(f"    rt_dict_ssi {stmt.name} = {expr_result};")
             elif _needs_hpf(stmt.expr):
                 var_types[stmt.name] = "rt_int"
                 lines.append(f"    rt_int {stmt.name}; rt_int_init(&{stmt.name});")
@@ -436,6 +521,43 @@ def _emit_stmt(
         lines.append(f"{end_label}:")
         return
 
+    if isinstance(stmt, TryExcept):
+        ctx = state.next_temp(type_hint="rt_try_ctx")
+        flag = state.next_temp(type_hint="int")
+        lines.append(f"    rt_try_ctx {ctx};")
+        lines.append(f"    rt_try_push(&{ctx});")
+        lines.append(f"    int {flag} = setjmp({ctx}.env);")
+        lines.append(f"    if ({flag} == 0) {{")
+        for s in stmt.body:
+            _emit_stmt(s, lines, state, var_types, fn_sigs, in_loop=in_loop, break_label=break_label, continue_label=continue_label)
+        lines.append(f"        rt_try_pop(&{ctx});")
+        lines.append("    } else {")
+        if stmt.exc_name is None:
+            lines.append("        rt_exc_clear();")
+            lines.append(f"        rt_try_pop(&{ctx});")
+            for s in stmt.handler:
+                _emit_stmt(s, lines, state, var_types, fn_sigs, in_loop=in_loop, break_label=break_label, continue_label=continue_label)
+        else:
+            enumv = _exc_enum(stmt.exc_name)
+            lines.append(f"        if (rt_exc_is({enumv})) {{")
+            lines.append("            rt_exc_clear();")
+            lines.append(f"            rt_try_pop(&{ctx});")
+            for s in stmt.handler:
+                _emit_stmt(s, lines, state, var_types, fn_sigs, in_loop=in_loop, break_label=break_label, continue_label=continue_label)
+            lines.append("        } else {")
+            lines.append(f"            rt_try_pop(&{ctx});")
+            lines.append("            rt_reraise();")
+            lines.append("        }")
+        lines.append("    }")
+        return
+
+    if isinstance(stmt, Raise):
+        enumv = _exc_enum(stmt.exc_name)
+        msg = stmt.message if stmt.message is not None else ""
+        msg_c = msg.replace('\\', r'\\').replace('"', r'\\"')
+        lines.append(f"    rt_raise({enumv}, \"{msg_c}\", \"<source>\", {stmt.lineno});")
+        return
+
     if isinstance(stmt, Return):
         if stmt.expr:
             expr_result = _emit_expr(stmt.expr, lines, state, var_types, fn_sigs)
@@ -456,6 +578,14 @@ def _emit_stmt(
         return
 
     if isinstance(stmt, MethodCallStmt):
+        obj_type = var_types.get(stmt.obj, "long long")
+        if obj_type == "rt_list_si" and stmt.method == "append":
+            if len(stmt.args) != 1:
+                raise ValueError("list.append expects 1 argument")
+            av = _emit_expr(stmt.args[0], lines, state, var_types, fn_sigs)
+            lines.append(f"    rt_list_si_append(&{stmt.obj}, {av});")
+            return
+
         arg_exprs = []
         for arg in stmt.args:
             arg_expr = _emit_expr(arg, lines, state, var_types, fn_sigs)
@@ -515,6 +645,8 @@ def generate(module_ir: ModuleIR) -> CSource:
     lines.append('#include <stdio.h>')
     lines.append('#include <stdlib.h>')
     lines.append('#include <string.h>')
+    lines.append('#include <stdint.h>')
+    lines.append('#include <setjmp.h>')
     # Include runtime library header
     lines.append('#include "runtime.h"')
     lines.append("")

@@ -6,7 +6,7 @@ representation of Python code in the pcc compiler.
 """
 
 from dataclasses import dataclass
-from typing import List, Union
+from typing import List, Union, Optional
 
 
 # ==================== Expressions ====================
@@ -22,6 +22,16 @@ class IntConst:
 
 
 @dataclass(frozen=True)
+class FloatConst:
+    """Float constant expression.
+
+    Attributes:
+        value: The float value (C double precision)
+    """
+    value: float
+
+
+@dataclass(frozen=True)
 class StrConst:
     """String constant expression.
 
@@ -29,6 +39,48 @@ class StrConst:
         value: The string value
     """
     value: str
+
+
+@dataclass(frozen=True)
+class ListConst:
+    """List literal expression (restricted subset).
+
+    Current PCC list support is intentionally minimal: lists are homogeneous
+    sequences of signed 64-bit integers.
+
+    Attributes:
+        elements: List element expressions (must evaluate to int)
+    """
+    elements: List["Expr"]
+
+
+@dataclass(frozen=True)
+class DictConst:
+    """Dict literal expression (restricted subset).
+
+    Current PCC dict support is intentionally minimal: keys are strings and
+    values are signed 64-bit integers.
+
+    Attributes:
+        keys: Key expressions (must be string literals or string vars)
+        values: Value expressions (must evaluate to int)
+    """
+    keys: List["Expr"]
+    values: List["Expr"]
+
+
+@dataclass(frozen=True)
+class Subscript:
+    """Subscript expression (obj[index]).
+
+    For M2 this is restricted to variable subscripting for list/dict.
+
+    Attributes:
+        obj: Variable name of the container
+        index: Index / key expression
+    """
+    obj: str
+    index: "Expr"
 
 
 @dataclass(frozen=True)
@@ -132,7 +184,21 @@ class BuiltinCall:
 
 
 # Union type for all expressions
-Expr = Union[IntConst, StrConst, Var, BinOp, CmpOp, Call, AttributeAccess, MethodCall, ConstructorCall, BuiltinCall]
+Expr = Union[
+    IntConst,
+    StrConst,
+    ListConst,
+    DictConst,
+    Subscript,
+    Var,
+    BinOp,
+    CmpOp,
+    Call,
+    AttributeAccess,
+    MethodCall,
+    ConstructorCall,
+    BuiltinCall,
+]
 
 
 # ==================== Statements ====================
@@ -263,8 +329,60 @@ class Continue:
     lineno: int
 
 
+@dataclass(frozen=True)
+class Raise:
+    """Raise an exception.
+
+    Minimal subset for M3:
+      - raise <Name>("message")
+      - raise <Name>()
+      - raise <Name>
+
+    Attributes:
+        exc_name: Exception class name (e.g., ValueError, ZeroDivisionError)
+        message: Optional message string
+        lineno: Source line number for diagnostics
+    """
+    exc_name: str
+    message: Optional[str]
+    lineno: int
+
+
+@dataclass(frozen=True)
+class TryExcept:
+    """Try/except block.
+
+    Minimal subset for M3:
+      - try: <body> except <Name>: <handler>
+      - try: <body> except: <handler>   (catch-all)
+
+    Attributes:
+        body: Statements in the try block
+        exc_name: Optional exception class name to match (None = catch-all)
+        handler: Statements in the except handler
+        lineno: Source line number of the try statement
+    """
+    body: List["Stmt"]
+    exc_name: Optional[str]
+    handler: List["Stmt"]
+    lineno: int
+
+
 # Union type for all statements
-Stmt = Union[Assign, AttrAssign, MethodCallStmt, Print, If, While, ForRange, Return, Break, Continue]
+Stmt = Union[
+    Assign,
+    AttrAssign,
+    MethodCallStmt,
+    Print,
+    If,
+    While,
+    ForRange,
+    TryExcept,
+    Raise,
+    Return,
+    Break,
+    Continue,
+]
 
 
 # ==================== Module-level Constructs ====================

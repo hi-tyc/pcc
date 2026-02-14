@@ -231,8 +231,11 @@ class Compiler:
             runtime_dir / "rt_bigint.c",
             runtime_dir / "rt_string.c",
             runtime_dir / "rt_error.c",
+            runtime_dir / "rt_exc.c",
             runtime_dir / "rt_math.c",
             runtime_dir / "rt_string_ex.c",
+            runtime_dir / "rt_list.c",
+            runtime_dir / "rt_dict.c",
         ]
 
         if toolchain in ("msvc", "clang-cl"):

@@ -180,6 +180,8 @@ print(c_source.c_source)
   - Operations: `+`, `-`, `*`, `//`, `%`
   - Comparisons: `==`, `!=`, `<`, `<=`, `>`, `>=`
 - **Strings**: Literals, variables, concatenation (`+`)
+- **Lists (M2 subset)**: List literals `[...]` of integers, `len(list)`, `list.append(x)`, indexing `list[i]` (supports negative indices)
+- **Dictionaries (M2 subset)**: Dict literals `{ "k": v }` with string keys and integer values, `len(dict)`, indexing `dict[key]`
 - **Booleans**: Result of comparisons (0/1 integers)
 
 ### Statements
@@ -210,7 +212,8 @@ def function_name(param1, param2):
 - No `//` or `%` in expressions (only in statements)
 - No `int + str` or `str + int` mixing
 - No string comparison
-- No classes, lists, dictionaries, tuples
+- No classes or tuples
+- List/dict support is currently limited (see "Lists (M2 subset)" / "Dictionaries (M2 subset)" above)
 - No exception handling, imports, or decorators
 - No keyword arguments
 

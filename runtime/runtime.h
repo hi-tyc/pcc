@@ -15,9 +15,16 @@ extern "C" {
 #include "rt_config.h"
 #include "rt_error.h"
 
+/* Exceptions (M3) */
+#include "rt_exc.h"
+
 /* String runtime */
 #include "rt_string.h"
 #include "rt_string_ex.h"
+
+/* List/Dict runtime (M2) */
+#include "rt_list.h"
+#include "rt_dict.h"
 
 /* BigInt runtime */
 #include "rt_bigint.h"

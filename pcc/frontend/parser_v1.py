@@ -6,11 +6,12 @@ used by the pcc compiler.
 """
 
 import ast
-from typing import Dict, List, Set
+from typing import Dict, List, Set, Optional
 
 from ..ir import (
-    IntConst, StrConst, Var, BinOp, CmpOp, Call, AttributeAccess, MethodCall, ConstructorCall, BuiltinCall, Expr,
-    Assign, AttrAssign, MethodCallStmt, Print, If, While, ForRange, Return, Break, Continue, Stmt,
+    IntConst, StrConst, ListConst, DictConst, Subscript,
+    Var, BinOp, CmpOp, Call, AttributeAccess, MethodCall, ConstructorCall, BuiltinCall, Expr,
+    Assign, AttrAssign, MethodCallStmt, Print, If, While, ForRange, TryExcept, Raise, Return, Break, Continue, Stmt,
     FunctionDef, ClassDef, ModuleIR
 )
 
@@ -122,7 +123,7 @@ class Parser:
     def _validate_module_level_stmt(self, stmt: ast.stmt) -> None:
         """Validate that a module-level statement is supported."""
         unsupported = (ast.Import, ast.ImportFrom, ast.Lambda,
-                      ast.Try, ast.With, ast.Raise)
+                      ast.With)
         if isinstance(stmt, unsupported):
             lineno = getattr(stmt, 'lineno', '?')
             raise ParseError(f"Line {lineno}: unsupported statement: {type(stmt).__name__}")
@@ -249,12 +250,73 @@ class Parser:
         if isinstance(stmt, ast.Continue):
             return self._parse_continue(stmt, in_loop_depth)
 
+        # Try/except (M3 subset)
+        if isinstance(stmt, ast.Try):
+            return self._parse_try(stmt, defined, in_loop_depth)
+
+        # Raise (M3 subset)
+        if isinstance(stmt, ast.Raise):
+            return self._parse_raise(stmt, defined)
+
         # Global/Nonlocal
         if isinstance(stmt, (ast.Global, ast.Nonlocal)):
             lineno = getattr(stmt, 'lineno', '?')
             raise ParseError(f"Line {lineno}: global/nonlocal not supported")
 
         raise ParseError(f"Unsupported statement: {type(stmt).__name__}")
+
+    def _parse_raise(self, stmt: ast.Raise, defined: Set[str]) -> Stmt:
+        """Parse a raise statement (M3 subset)."""
+        lineno = getattr(stmt, 'lineno', 0)
+        if stmt.exc is None:
+            raise ParseError(f"Line {lineno}: bare 'raise' not supported")
+
+        # Supported forms:
+        #   raise Name
+        #   raise Name("message")
+        #   raise Name()
+        exc_name: str
+        msg: Optional[str] = None
+
+        if isinstance(stmt.exc, ast.Name):
+            exc_name = stmt.exc.id
+        elif isinstance(stmt.exc, ast.Call) and isinstance(stmt.exc.func, ast.Name):
+            exc_name = stmt.exc.func.id
+            if stmt.exc.args:
+                if len(stmt.exc.args) != 1:
+                    raise ParseError(f"Line {lineno}: raise {exc_name} supports at most 1 argument")
+                arg0 = stmt.exc.args[0]
+                if isinstance(arg0, ast.Constant) and isinstance(arg0.value, str):
+                    msg = str(arg0.value)
+                else:
+                    raise ParseError(f"Line {lineno}: raise {exc_name} only supports string literal message")
+        else:
+            raise ParseError(f"Line {lineno}: unsupported raise form")
+
+        return Raise(exc_name=exc_name, message=msg, lineno=lineno)
+
+    def _parse_try(self, stmt: ast.Try, defined: Set[str], in_loop_depth: int) -> Stmt:
+        """Parse try/except (M3 subset)."""
+        lineno = getattr(stmt, 'lineno', 0)
+        if stmt.finalbody or stmt.orelse:
+            raise ParseError(f"Line {lineno}: try/else/finally not supported")
+        if len(stmt.handlers) != 1:
+            raise ParseError(f"Line {lineno}: only single except handler supported")
+
+        h = stmt.handlers[0]
+        exc_name: Optional[str] = None
+        if h.type is None:
+            exc_name = None  # catch-all
+        elif isinstance(h.type, ast.Name):
+            exc_name = h.type.id
+        else:
+            raise ParseError(f"Line {lineno}: unsupported except type")
+        if h.name is not None:
+            raise ParseError(f"Line {lineno}: 'except X as e' not supported")
+
+        body: List[Stmt] = [self._parse_stmt(s, defined, in_loop_depth) for s in stmt.body]
+        handler: List[Stmt] = [self._parse_stmt(s, defined, in_loop_depth) for s in h.body]
+        return TryExcept(body=body, exc_name=exc_name, handler=handler, lineno=lineno)
 
     def _parse_assign(self, stmt: ast.Assign, defined: Set[str]) -> Stmt:
         """Parse an assignment statement."""
@@ -459,6 +521,35 @@ class Parser:
         # Function call or method call or constructor call
         if isinstance(node, ast.Call):
             return self._parse_call(node, defined)
+
+        # List literal
+        if isinstance(node, ast.List):
+            elts = [self._parse_expr(e, defined) for e in node.elts]
+            return ListConst(elts)
+
+        # Dict literal
+        if isinstance(node, ast.Dict):
+            keys = []
+            values = []
+            for k, v in zip(node.keys, node.values):
+                if k is None:
+                    raise ParseError("Dict unpacking (**d) is not supported")
+                keys.append(self._parse_expr(k, defined))
+                values.append(self._parse_expr(v, defined))
+            return DictConst(keys=keys, values=values)
+
+        # Subscript (obj[index])
+        if isinstance(node, ast.Subscript):
+            if not isinstance(node.value, ast.Name):
+                raise ParseError("Only simple variable subscripting is supported")
+            obj_name = node.value.id
+            if obj_name not in defined:
+                lineno = getattr(node, 'lineno', '?')
+                raise ParseError(f"Line {lineno}: variable used before assignment: {obj_name}")
+            # Python 3.9+: slice is an expr
+            idx_node = node.slice
+            index_expr = self._parse_expr(idx_node, defined)
+            return Subscript(obj=obj_name, index=index_expr)
 
         raise ParseError(f"Unsupported expression: {type(node).__name__}")
 
