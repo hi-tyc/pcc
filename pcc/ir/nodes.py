@@ -22,6 +22,16 @@ class IntConst:
 
 
 @dataclass(frozen=True)
+class FloatConst:
+    """Float constant expression.
+
+    Attributes:
+        value: The float value (C double precision)
+    """
+    value: float
+
+
+@dataclass(frozen=True)
 class StrConst:
     """String constant expression.
 

@@ -8,6 +8,7 @@ The IR is a simplified AST that represents the Python subset supported by pcc.
 from .nodes import (
     # Expressions
     IntConst,
+    FloatConst,
     StrConst,
     ListConst,
     DictConst,
@@ -44,6 +45,7 @@ from .nodes import (
 __all__ = [
     # Expressions
     "IntConst",
+    "FloatConst",
     "StrConst",
     "ListConst",
     "DictConst",
