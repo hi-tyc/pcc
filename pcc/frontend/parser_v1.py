@@ -9,7 +9,7 @@ import ast
 from typing import Dict, List, Set
 
 from ..ir import (
-    IntConst, StrConst, Var, BinOp, CmpOp, Call, AttributeAccess, MethodCall, ConstructorCall, BuiltinCall, Expr,
+    IntConst, FloatConst, StrConst, Var, BinOp, CmpOp, Call, AttributeAccess, MethodCall, ConstructorCall, BuiltinCall, Expr,
     Assign, AttrAssign, MethodCallStmt, Print, If, While, ForRange, Return, Break, Continue, Stmt,
     FunctionDef, ClassDef, ModuleIR
 )
@@ -425,6 +425,10 @@ class Parser:
         # Integer constant
         if isinstance(node, ast.Constant) and isinstance(node.value, int):
             return IntConst(int(node.value))
+
+        # Float constant
+        if isinstance(node, ast.Constant) and isinstance(node.value, float):
+            return FloatConst(float(node.value))
 
         # String constant
         if isinstance(node, ast.Constant) and isinstance(node.value, str):

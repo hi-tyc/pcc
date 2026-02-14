@@ -10,7 +10,7 @@ from typing import List, Dict, Optional, Set, Tuple
 
 from ..ir import (
     ModuleIR, FunctionDef, ClassDef, Stmt, Expr,
-    IntConst, StrConst, Var, BinOp, CmpOp, Call, AttributeAccess, MethodCall, ConstructorCall, BuiltinCall,
+    IntConst, FloatConst, StrConst, Var, BinOp, CmpOp, Call, AttributeAccess, MethodCall, ConstructorCall, BuiltinCall,
     Assign, AttrAssign, MethodCallStmt, Print, If, While, ForRange, Return, Break, Continue
 )
 
@@ -63,6 +63,19 @@ def _expr_produces_string(expr: Expr, var_types: Dict[str, str]) -> bool:
         return left_is_str and right_is_str
     return False
 
+def _expr_produces_float(expr: Expr, var_types: Dict[str, str]) -> bool:
+    """Check if an expression produces a floating-point (double) result."""
+    if isinstance(expr, FloatConst):
+        return True
+    if isinstance(expr, Var):
+        return var_types.get(expr.name) == "double"
+    if isinstance(expr, BinOp):
+        # Only arithmetic binops can yield float; comparisons yield bool (int)
+        if expr.op in {"+", "-", "*", "//", "%"}:
+            return _expr_produces_float(expr.left, var_types) or _expr_produces_float(expr.right, var_types)
+    return False
+
+
 
 def _needs_hpf(expr: Expr) -> bool:
     """Check if expression needs HPF (value exceeds 64-bit range)."""
@@ -93,6 +106,12 @@ def _emit_expr(
             lines.append(f'    rt_int_from_dec(&{temp}, "{expr.value}");')
             return f"&{temp}"
 
+    if isinstance(expr, FloatConst):
+        v = repr(float(expr.value))
+        if ("." not in v) and ("e" not in v) and ("E" not in v):
+            v = v + ".0"
+        return v
+
     if isinstance(expr, StrConst):
         temp = state.next_temp(type_hint="rt_str")
         escaped = expr.value.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n').replace('\t', '\\t')
@@ -105,6 +124,8 @@ def _emit_expr(
             return expr.name
         elif ctype == "rt_int":
             return f"&{expr.name}"
+        elif ctype == "double":
+            return expr.name
         else:
             # long long - return directly
             return expr.name
@@ -132,10 +153,46 @@ def _emit_expr(
             lines.append(f"    rt_str {temp} = rt_str_concat({left}, {right});")
             return temp
         else:
+
+            # Floating-point arithmetic if either side is float
+            left_is_float = _expr_produces_float(expr.left, var_types)
+            right_is_float = _expr_produces_float(expr.right, var_types)
+
+            if left_is_float or right_is_float:
+                # Promote operands to double as needed
+                left_d = left if left_is_float else f"(double)({left})"
+                right_d = right if right_is_float else f"(double)({right})"
+
+                temp = state.next_temp(type_hint="double")
+                lines.append(f"    double {temp};")
+
+                if expr.op in {"+", "-", "*"}:
+                    lines.append(f"    {temp} = {left_d} {expr.op} {right_d};")
+                elif expr.op == "//":
+                    # Python-style floor division for floats without libm:
+                    # q = a / b; t = trunc(q); if q<0 and q!=t then t-=1
+                    qtmp = state.next_temp(type_hint="double")
+                    ttmp = state.next_temp(type_hint="long long")
+                    lines.append(f"    double {qtmp} = {left_d} / {right_d};")
+                    lines.append(f"    long long {ttmp} = (long long){qtmp};")
+                    lines.append(f"    if ({qtmp} < 0.0 && (double){ttmp} != {qtmp}) {{ {ttmp} -= 1; }}")
+                    lines.append(f"    {temp} = (double){ttmp};")
+                elif expr.op == "%":
+                    # Python float modulo: a - b*floor(a/b)
+                    qtmp = state.next_temp(type_hint="double")
+                    ttmp = state.next_temp(type_hint="long long")
+                    lines.append(f"    double {qtmp} = {left_d} / {right_d};")
+                    lines.append(f"    long long {ttmp} = (long long){qtmp};")
+                    lines.append(f"    if ({qtmp} < 0.0 && (double){ttmp} != {qtmp}) {{ {ttmp} -= 1; }}")
+                    lines.append(f"    {temp} = {left_d} - {right_d} * (double){ttmp};")
+                else:
+                    raise ValueError(f"Unsupported binary operator: {expr.op}")
+                return temp
+
             # Integer arithmetic - use native long long operations
             temp = state.next_temp(type_hint="long long")
             lines.append(f"    long long {temp};")
-            
+
             if expr.op == "+":
                 lines.append(f"    {temp} = {left} + {right};")
             elif expr.op == "-":
@@ -163,8 +220,17 @@ def _emit_expr(
     if isinstance(expr, CmpOp):
         left = _emit_expr(expr.left, lines, state, var_types, fn_sigs)
         right = _emit_expr(expr.right, lines, state, var_types, fn_sigs)
+
+        # If either side is float, compare as double
+        if _expr_produces_float(expr.left, var_types) or _expr_produces_float(expr.right, var_types):
+            left_c = left if _expr_produces_float(expr.left, var_types) else f"(double)({left})"
+            right_c = right if _expr_produces_float(expr.right, var_types) else f"(double)({right})"
+        else:
+            left_c = left
+            right_c = right
+
         temp = state.next_temp(type_hint="int")
-        lines.append(f"    int {temp} = ({left} {expr.op} {right});")
+        lines.append(f"    int {temp} = ({left_c} {expr.op} {right_c});")
         return f"({temp} != 0)"
 
     if isinstance(expr, Call):
@@ -343,8 +409,16 @@ def _emit_stmt(
                 lines.append(f"    {stmt.name} = {expr_result};")
             elif ctype == "rt_int":
                 lines.append(f"    rt_int_assign(&{stmt.name}, {expr_result});")
+            elif ctype == "double":
+                # Allow assigning ints to double via promotion
+                if _expr_produces_float(stmt.expr, var_types):
+                    lines.append(f"    {stmt.name} = {expr_result};")
+                else:
+                    lines.append(f"    {stmt.name} = (double)({expr_result});")
             else:
                 # long long
+                if _expr_produces_float(stmt.expr, var_types):
+                    raise ValueError(f"Type error: cannot assign float expression to integer variable '{stmt.name}'")
                 lines.append(f"    {stmt.name} = {expr_result};")
         else:
             # New variable - need to declare
@@ -354,6 +428,13 @@ def _emit_stmt(
             elif _expr_produces_string(stmt.expr, var_types):
                 var_types[stmt.name] = "rt_str"
                 lines.append(f"    rt_str {stmt.name} = {expr_result};")
+            elif _expr_produces_float(stmt.expr, var_types):
+                var_types[stmt.name] = "double"
+                # If expr is int temp, promote
+                if _expr_produces_float(stmt.expr, var_types):
+                    lines.append(f"    double {stmt.name} = {expr_result};")
+                else:
+                    lines.append(f"    double {stmt.name} = (double)({expr_result});")
             elif _needs_hpf(stmt.expr):
                 var_types[stmt.name] = "rt_int"
                 lines.append(f"    rt_int {stmt.name}; rt_int_init(&{stmt.name});")
@@ -378,6 +459,9 @@ def _emit_stmt(
             lines.append(f"    rt_print_int({expr_result});")
         elif _needs_hpf(stmt.expr):
             lines.append(f"    rt_print_int({expr_result});")
+        elif _expr_produces_float(stmt.expr, var_types) or (isinstance(stmt.expr, Var) and var_types.get(stmt.expr.name) == "double"):
+            # Print double with reasonable precision (close to Python's repr for simple cases)
+            lines.append(f"    printf(\"%.17g\\n\", {expr_result});")
         else:
             # Print long long directly
             lines.append(f"    printf(\"%lld\\n\", {expr_result});")
