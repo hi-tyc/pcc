@@ -43,7 +43,7 @@ typedef struct rt_try_ctx {
 } rt_try_ctx;
 
 /* Enter a try scope. Returns 0 on first entry; non-zero after a raise. */
-int rt_try_push(rt_try_ctx* ctx);
+void rt_try_push(rt_try_ctx* ctx);
 
 /* Leave the current try scope (must be the matching ctx). */
 void rt_try_pop(rt_try_ctx* ctx);

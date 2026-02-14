@@ -218,8 +218,7 @@ class TestRunner:
             sys.executable, "-m", "pcc", "build",
             str(test_file),
             "-o", str(exe_path),
-            "--toolchain", self.toolchain.value,
-            "--parser-version", "2"
+            "--toolchain", self.toolchain.value
         ]
         
         # Add --use-hpf flag for tests that need BigInt support

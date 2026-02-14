@@ -123,7 +123,7 @@ class Parser:
     def _validate_module_level_stmt(self, stmt: ast.stmt) -> None:
         """Validate that a module-level statement is supported."""
         unsupported = (ast.Import, ast.ImportFrom, ast.Lambda,
-                      ast.Try, ast.With, ast.Raise)
+                      ast.With)
         if isinstance(stmt, unsupported):
             lineno = getattr(stmt, 'lineno', '?')
             raise ParseError(f"Line {lineno}: unsupported statement: {type(stmt).__name__}")

@@ -189,12 +189,6 @@ def _emit_expr(
             temp = state.next_temp(type_hint="long long")
             lines.append(f"    long long {temp};")
             
-            # For division and modulo, ensure right operand is in a variable to avoid compile-time detection
-            if expr.op in ("//", "%") and isinstance(expr.right, IntConst):
-                right_var = state.next_temp(type_hint="long long")
-                lines.append(f"    long long {right_var} = {right};")
-                right = right_var
-            
             if expr.op == "+":
                 lines.append(f"    {temp} = {left} + {right};")
             elif expr.op == "-":
@@ -202,21 +196,19 @@ def _emit_expr(
             elif expr.op == "*":
                 lines.append(f"    {temp} = {left} * {right};")
             elif expr.op == "//":
+                lines.append(f"    if ({right} == 0) RT_RAISE(RT_EXC_ZeroDivisionError, \"division by zero\");")
                 # Python floor division: floor(a / b)
                 # C truncates toward zero, so we need to adjust for negative results
-                # Check for division by zero first - must check BEFORE performing division
-                lines.append(f"    if ({right} == 0) RT_RAISE(RT_EXC_ZeroDivisionError, \"division by zero\");")
                 lines.append(f"    {temp} = {left} / {right};")
-                lines.append(f"    if ({right} != 0 && ({left} < 0) != ({right} < 0) && {left} % {right} != 0) {{")
+                lines.append(f"    if (({left} < 0) != ({right} < 0) && {left} % {right} != 0) {{")
                 lines.append(f"        {temp} -= 1;")
                 lines.append(f"    }}")
             elif expr.op == "%":
+                lines.append(f"    if ({right} == 0) RT_RAISE(RT_EXC_ZeroDivisionError, \"modulo by zero\");")
                 # Python modulo: result has same sign as divisor (always non-negative for positive divisor)
                 # C's % has same sign as dividend
-                # Check for division by zero first - must check BEFORE performing modulo
-                lines.append(f"    if ({right} == 0) RT_RAISE(RT_EXC_ZeroDivisionError, \"modulo by zero\");")
                 lines.append(f"    {temp} = {left} % {right};")
-                lines.append(f"    if ({right} != 0 && ({left} < 0) != ({right} < 0) && {temp} != 0) {{")
+                lines.append(f"    if (({left} < 0) != ({right} < 0) && {temp} != 0) {{")
                 lines.append(f"        {temp} += {right};")
                 lines.append(f"    }}")
             else:
@@ -533,7 +525,8 @@ def _emit_stmt(
         ctx = state.next_temp(type_hint="rt_try_ctx")
         flag = state.next_temp(type_hint="int")
         lines.append(f"    rt_try_ctx {ctx};")
-        lines.append(f"    int {flag} = rt_try_push(&{ctx});")
+        lines.append(f"    rt_try_push(&{ctx});")
+        lines.append(f"    int {flag} = setjmp({ctx}.env);")
         lines.append(f"    if ({flag} == 0) {{")
         for s in stmt.body:
             _emit_stmt(s, lines, state, var_types, fn_sigs, in_loop=in_loop, break_label=break_label, continue_label=continue_label)
@@ -653,6 +646,7 @@ def generate(module_ir: ModuleIR) -> CSource:
     lines.append('#include <stdlib.h>')
     lines.append('#include <string.h>')
     lines.append('#include <stdint.h>')
+    lines.append('#include <setjmp.h>')
     # Include runtime library header
     lines.append('#include "runtime.h"')
     lines.append("")

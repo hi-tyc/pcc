@@ -68,8 +68,8 @@ Examples:
         "--parser-version",
         type=int,
         choices=[1, 2],
-        default=2,
-        help="Parser version to use: 1=AST-based, 2=tokenize-based (default)"
+        default=1,
+        help="Parser version to use: 1=AST-based (default), 2=tokenize-based"
     )
     build_parser.add_argument(
         "--use-hpf",

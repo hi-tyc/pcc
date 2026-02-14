@@ -10,11 +10,10 @@
 static rt_try_ctx* g_try_top = NULL;
 static rt_exc_t g_exc = { RT_EXC_Exception, NULL, NULL, 0 };
 
-int rt_try_push(rt_try_ctx* ctx) {
-    if (!ctx) return 0;
+void rt_try_push(rt_try_ctx* ctx) {
+    if (!ctx) return;
     ctx->prev = g_try_top;
-    g_try_top = ctx;
-    return setjmp(ctx->env);
+    g_try_top = ctx;;
 }
 
 void rt_try_pop(rt_try_ctx* ctx) {

@@ -7,13 +7,14 @@
  * Current restrictions:
  *  - List elements are signed 64-bit integers ("si" = signed integer).
  *  - No slicing.
- *  - Bounds errors abort the program (matches current PCC error strategy).
+ *  - Bounds errors raise IndexError when inside a try/except context; otherwise abort.
  */
 
 #pragma once
 
 #include "rt_config.h"
 #include "rt_error.h"
+#include "rt_exc.h"
 
 #ifdef __cplusplus
 extern "C" {
