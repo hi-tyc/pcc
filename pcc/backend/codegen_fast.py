@@ -10,8 +10,9 @@ from typing import List, Dict, Optional, Set, Tuple
 
 from ..ir import (
     ModuleIR, FunctionDef, ClassDef, Stmt, Expr,
-    IntConst, FloatConst, StrConst, Var, BinOp, CmpOp, Call, AttributeAccess, MethodCall, ConstructorCall, BuiltinCall,
-    Assign, AttrAssign, MethodCallStmt, Print, If, While, ForRange, Return, Break, Continue
+    IntConst, StrConst, ListConst, DictConst, Subscript,
+    Var, BinOp, CmpOp, Call, AttributeAccess, MethodCall, ConstructorCall, BuiltinCall,
+    Assign, AttrAssign, MethodCallStmt, Print, If, While, ForRange, TryExcept, Raise, Return, Break, Continue
 )
 
 
@@ -63,18 +64,23 @@ def _expr_produces_string(expr: Expr, var_types: Dict[str, str]) -> bool:
         return left_is_str and right_is_str
     return False
 
-def _expr_produces_float(expr: Expr, var_types: Dict[str, str]) -> bool:
-    """Check if an expression produces a floating-point (double) result."""
-    if isinstance(expr, FloatConst):
+
+def _expr_is_list(expr: Expr, var_types: Dict[str, str]) -> bool:
+    """True if expression is (or evaluates to) a PCC list."""
+    if isinstance(expr, ListConst):
         return True
     if isinstance(expr, Var):
-        return var_types.get(expr.name) == "double"
-    if isinstance(expr, BinOp):
-        # Only arithmetic binops can yield float; comparisons yield bool (int)
-        if expr.op in {"+", "-", "*", "//", "%"}:
-            return _expr_produces_float(expr.left, var_types) or _expr_produces_float(expr.right, var_types)
+        return var_types.get(expr.name) == "rt_list_si"
     return False
 
+
+def _expr_is_dict(expr: Expr, var_types: Dict[str, str]) -> bool:
+    """True if expression is (or evaluates to) a PCC dict."""
+    if isinstance(expr, DictConst):
+        return True
+    if isinstance(expr, Var):
+        return var_types.get(expr.name) == "rt_dict_ssi"
+    return False
 
 
 def _needs_hpf(expr: Expr) -> bool:
@@ -106,17 +112,41 @@ def _emit_expr(
             lines.append(f'    rt_int_from_dec(&{temp}, "{expr.value}");')
             return f"&{temp}"
 
-    if isinstance(expr, FloatConst):
-        v = repr(float(expr.value))
-        if ("." not in v) and ("e" not in v) and ("E" not in v):
-            v = v + ".0"
-        return v
-
     if isinstance(expr, StrConst):
         temp = state.next_temp(type_hint="rt_str")
         escaped = expr.value.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n').replace('\t', '\\t')
         lines.append(f'    rt_str {temp} = rt_str_from_cstr("{escaped}");')
         return temp
+
+    if isinstance(expr, ListConst):
+        temp = state.next_temp(type_hint="rt_list_si")
+        lines.append(f"    rt_list_si {temp}; rt_list_si_init(&{temp});")
+        for e in expr.elements:
+            ev = _emit_expr(e, lines, state, var_types, fn_sigs)
+            lines.append(f"    rt_list_si_append(&{temp}, {ev});")
+        return temp
+
+    if isinstance(expr, DictConst):
+        temp = state.next_temp(type_hint="rt_dict_ssi")
+        lines.append(f"    rt_dict_ssi {temp}; rt_dict_ssi_init(&{temp});")
+        for k, v in zip(expr.keys, expr.values):
+            kv = _emit_expr(k, lines, state, var_types, fn_sigs)
+            vv = _emit_expr(v, lines, state, var_types, fn_sigs)
+            lines.append(f"    rt_dict_ssi_set(&{temp}, {kv}, {vv});")
+        return temp
+
+    if isinstance(expr, Subscript):
+        ctype = _ctype_for_var(expr.obj, var_types)
+        idx = _emit_expr(expr.index, lines, state, var_types, fn_sigs)
+        temp = state.next_temp(type_hint="long long")
+        lines.append(f"    long long {temp};")
+        if ctype == "rt_list_si":
+            lines.append(f"    {temp} = rt_list_si_get(&{expr.obj}, {idx});")
+            return temp
+        if ctype == "rt_dict_ssi":
+            lines.append(f"    {temp} = rt_dict_ssi_get(&{expr.obj}, {idx});")
+            return temp
+        raise ValueError(f"Subscript on unsupported type for {expr.obj}: {ctype}")
 
     if isinstance(expr, Var):
         ctype = _ctype_for_var(expr.name, var_types)
@@ -124,7 +154,9 @@ def _emit_expr(
             return expr.name
         elif ctype == "rt_int":
             return f"&{expr.name}"
-        elif ctype == "double":
+        elif ctype == "rt_list_si":
+            return expr.name
+        elif ctype == "rt_dict_ssi":
             return expr.name
         else:
             # long long - return directly
@@ -153,46 +185,10 @@ def _emit_expr(
             lines.append(f"    rt_str {temp} = rt_str_concat({left}, {right});")
             return temp
         else:
-
-            # Floating-point arithmetic if either side is float
-            left_is_float = _expr_produces_float(expr.left, var_types)
-            right_is_float = _expr_produces_float(expr.right, var_types)
-
-            if left_is_float or right_is_float:
-                # Promote operands to double as needed
-                left_d = left if left_is_float else f"(double)({left})"
-                right_d = right if right_is_float else f"(double)({right})"
-
-                temp = state.next_temp(type_hint="double")
-                lines.append(f"    double {temp};")
-
-                if expr.op in {"+", "-", "*"}:
-                    lines.append(f"    {temp} = {left_d} {expr.op} {right_d};")
-                elif expr.op == "//":
-                    # Python-style floor division for floats without libm:
-                    # q = a / b; t = trunc(q); if q<0 and q!=t then t-=1
-                    qtmp = state.next_temp(type_hint="double")
-                    ttmp = state.next_temp(type_hint="long long")
-                    lines.append(f"    double {qtmp} = {left_d} / {right_d};")
-                    lines.append(f"    long long {ttmp} = (long long){qtmp};")
-                    lines.append(f"    if ({qtmp} < 0.0 && (double){ttmp} != {qtmp}) {{ {ttmp} -= 1; }}")
-                    lines.append(f"    {temp} = (double){ttmp};")
-                elif expr.op == "%":
-                    # Python float modulo: a - b*floor(a/b)
-                    qtmp = state.next_temp(type_hint="double")
-                    ttmp = state.next_temp(type_hint="long long")
-                    lines.append(f"    double {qtmp} = {left_d} / {right_d};")
-                    lines.append(f"    long long {ttmp} = (long long){qtmp};")
-                    lines.append(f"    if ({qtmp} < 0.0 && (double){ttmp} != {qtmp}) {{ {ttmp} -= 1; }}")
-                    lines.append(f"    {temp} = {left_d} - {right_d} * (double){ttmp};")
-                else:
-                    raise ValueError(f"Unsupported binary operator: {expr.op}")
-                return temp
-
             # Integer arithmetic - use native long long operations
             temp = state.next_temp(type_hint="long long")
             lines.append(f"    long long {temp};")
-
+            
             if expr.op == "+":
                 lines.append(f"    {temp} = {left} + {right};")
             elif expr.op == "-":
@@ -200,6 +196,7 @@ def _emit_expr(
             elif expr.op == "*":
                 lines.append(f"    {temp} = {left} * {right};")
             elif expr.op == "//":
+                lines.append(f"    if ({right} == 0) RT_RAISE(RT_EXC_ZeroDivisionError, \"division by zero\");")
                 # Python floor division: floor(a / b)
                 # C truncates toward zero, so we need to adjust for negative results
                 lines.append(f"    {temp} = {left} / {right};")
@@ -207,6 +204,7 @@ def _emit_expr(
                 lines.append(f"        {temp} -= 1;")
                 lines.append(f"    }}")
             elif expr.op == "%":
+                lines.append(f"    if ({right} == 0) RT_RAISE(RT_EXC_ZeroDivisionError, \"modulo by zero\");")
                 # Python modulo: result has same sign as divisor (always non-negative for positive divisor)
                 # C's % has same sign as dividend
                 lines.append(f"    {temp} = {left} % {right};")
@@ -220,17 +218,8 @@ def _emit_expr(
     if isinstance(expr, CmpOp):
         left = _emit_expr(expr.left, lines, state, var_types, fn_sigs)
         right = _emit_expr(expr.right, lines, state, var_types, fn_sigs)
-
-        # If either side is float, compare as double
-        if _expr_produces_float(expr.left, var_types) or _expr_produces_float(expr.right, var_types):
-            left_c = left if _expr_produces_float(expr.left, var_types) else f"(double)({left})"
-            right_c = right if _expr_produces_float(expr.right, var_types) else f"(double)({right})"
-        else:
-            left_c = left
-            right_c = right
-
         temp = state.next_temp(type_hint="int")
-        lines.append(f"    int {temp} = ({left_c} {expr.op} {right_c});")
+        lines.append(f"    int {temp} = ({left} {expr.op} {right});")
         return f"({temp} != 0)"
 
     if isinstance(expr, Call):
@@ -311,12 +300,19 @@ def _emit_builtin_call(
         arg_exprs.append(arg_expr)
     
     if expr.name == 'len':
-        # len() returns the length of a string
-        # For now, only support string length
+        arg_expr = expr.args[0]
         arg = arg_exprs[0]
         temp = state.next_temp(type_hint="long long")
-        lines.append(f"    long long {temp} = rt_str_len(&{arg});")
-        return temp
+        if _expr_produces_string(arg_expr, var_types):
+            lines.append(f"    long long {temp} = (long long)rt_str_len(&{arg});")
+            return temp
+        if _expr_is_list(arg_expr, var_types):
+            lines.append(f"    long long {temp} = (long long)rt_list_si_len(&{arg});")
+            return temp
+        if _expr_is_dict(arg_expr, var_types):
+            lines.append(f"    long long {temp} = (long long)rt_dict_ssi_len(&{arg});")
+            return temp
+        raise ValueError("len() only supports str/list/dict in this PCC version")
     
     elif expr.name == 'abs':
         # abs() returns absolute value
@@ -397,6 +393,17 @@ def _emit_stmt(
     continue_label: Optional[str] = None
 ) -> None:
     """Emit code for a statement."""
+
+    def _exc_enum(exc_name: str) -> str:
+        mapping = {
+            "Exception": "RT_EXC_Exception",
+            "ZeroDivisionError": "RT_EXC_ZeroDivisionError",
+            "IndexError": "RT_EXC_IndexError",
+            "KeyError": "RT_EXC_KeyError",
+            "TypeError": "RT_EXC_TypeError",
+            "ValueError": "RT_EXC_ValueError",
+        }
+        return mapping.get(exc_name, "RT_EXC_Exception")
     
     if isinstance(stmt, Assign):
         expr_result = _emit_expr(stmt.expr, lines, state, var_types, fn_sigs)
@@ -409,32 +416,29 @@ def _emit_stmt(
                 lines.append(f"    {stmt.name} = {expr_result};")
             elif ctype == "rt_int":
                 lines.append(f"    rt_int_assign(&{stmt.name}, {expr_result});")
-            elif ctype == "double":
-                # Allow assigning ints to double via promotion
-                if _expr_produces_float(stmt.expr, var_types):
-                    lines.append(f"    {stmt.name} = {expr_result};")
-                else:
-                    lines.append(f"    {stmt.name} = (double)({expr_result});")
             else:
                 # long long
-                if _expr_produces_float(stmt.expr, var_types):
-                    raise ValueError(f"Type error: cannot assign float expression to integer variable '{stmt.name}'")
                 lines.append(f"    {stmt.name} = {expr_result};")
         else:
             # New variable - need to declare
             if isinstance(stmt.expr, StrConst):
                 var_types[stmt.name] = "rt_str"
                 lines.append(f"    rt_str {stmt.name} = {expr_result};")
+            elif isinstance(stmt.expr, ListConst):
+                var_types[stmt.name] = "rt_list_si"
+                lines.append(f"    rt_list_si {stmt.name} = {expr_result};")
+            elif isinstance(stmt.expr, DictConst):
+                var_types[stmt.name] = "rt_dict_ssi"
+                lines.append(f"    rt_dict_ssi {stmt.name} = {expr_result};")
             elif _expr_produces_string(stmt.expr, var_types):
                 var_types[stmt.name] = "rt_str"
                 lines.append(f"    rt_str {stmt.name} = {expr_result};")
-            elif _expr_produces_float(stmt.expr, var_types):
-                var_types[stmt.name] = "double"
-                # If expr is int temp, promote
-                if _expr_produces_float(stmt.expr, var_types):
-                    lines.append(f"    double {stmt.name} = {expr_result};")
-                else:
-                    lines.append(f"    double {stmt.name} = (double)({expr_result});")
+            elif _expr_is_list(stmt.expr, var_types):
+                var_types[stmt.name] = "rt_list_si"
+                lines.append(f"    rt_list_si {stmt.name} = {expr_result};")
+            elif _expr_is_dict(stmt.expr, var_types):
+                var_types[stmt.name] = "rt_dict_ssi"
+                lines.append(f"    rt_dict_ssi {stmt.name} = {expr_result};")
             elif _needs_hpf(stmt.expr):
                 var_types[stmt.name] = "rt_int"
                 lines.append(f"    rt_int {stmt.name}; rt_int_init(&{stmt.name});")
@@ -459,9 +463,6 @@ def _emit_stmt(
             lines.append(f"    rt_print_int({expr_result});")
         elif _needs_hpf(stmt.expr):
             lines.append(f"    rt_print_int({expr_result});")
-        elif _expr_produces_float(stmt.expr, var_types) or (isinstance(stmt.expr, Var) and var_types.get(stmt.expr.name) == "double"):
-            # Print double with reasonable precision (close to Python's repr for simple cases)
-            lines.append(f"    printf(\"%.17g\\n\", {expr_result});")
         else:
             # Print long long directly
             lines.append(f"    printf(\"%lld\\n\", {expr_result});")
@@ -520,6 +521,42 @@ def _emit_stmt(
         lines.append(f"{end_label}:")
         return
 
+    if isinstance(stmt, TryExcept):
+        ctx = state.next_temp(type_hint="rt_try_ctx")
+        flag = state.next_temp(type_hint="int")
+        lines.append(f"    rt_try_ctx {ctx};")
+        lines.append(f"    int {flag} = rt_try_push(&{ctx});")
+        lines.append(f"    if ({flag} == 0) {{")
+        for s in stmt.body:
+            _emit_stmt(s, lines, state, var_types, fn_sigs, in_loop=in_loop, break_label=break_label, continue_label=continue_label)
+        lines.append(f"        rt_try_pop(&{ctx});")
+        lines.append("    } else {")
+        if stmt.exc_name is None:
+            lines.append("        rt_exc_clear();")
+            lines.append(f"        rt_try_pop(&{ctx});")
+            for s in stmt.handler:
+                _emit_stmt(s, lines, state, var_types, fn_sigs, in_loop=in_loop, break_label=break_label, continue_label=continue_label)
+        else:
+            enumv = _exc_enum(stmt.exc_name)
+            lines.append(f"        if (rt_exc_is({enumv})) {{")
+            lines.append("            rt_exc_clear();")
+            lines.append(f"            rt_try_pop(&{ctx});")
+            for s in stmt.handler:
+                _emit_stmt(s, lines, state, var_types, fn_sigs, in_loop=in_loop, break_label=break_label, continue_label=continue_label)
+            lines.append("        } else {")
+            lines.append(f"            rt_try_pop(&{ctx});")
+            lines.append("            rt_reraise();")
+            lines.append("        }")
+        lines.append("    }")
+        return
+
+    if isinstance(stmt, Raise):
+        enumv = _exc_enum(stmt.exc_name)
+        msg = stmt.message if stmt.message is not None else ""
+        msg_c = msg.replace('\\', r'\\').replace('"', r'\\"')
+        lines.append(f"    rt_raise({enumv}, \"{msg_c}\", \"<source>\", {stmt.lineno});")
+        return
+
     if isinstance(stmt, Return):
         if stmt.expr:
             expr_result = _emit_expr(stmt.expr, lines, state, var_types, fn_sigs)
@@ -540,6 +577,14 @@ def _emit_stmt(
         return
 
     if isinstance(stmt, MethodCallStmt):
+        obj_type = var_types.get(stmt.obj, "long long")
+        if obj_type == "rt_list_si" and stmt.method == "append":
+            if len(stmt.args) != 1:
+                raise ValueError("list.append expects 1 argument")
+            av = _emit_expr(stmt.args[0], lines, state, var_types, fn_sigs)
+            lines.append(f"    rt_list_si_append(&{stmt.obj}, {av});")
+            return
+
         arg_exprs = []
         for arg in stmt.args:
             arg_expr = _emit_expr(arg, lines, state, var_types, fn_sigs)
@@ -599,6 +644,7 @@ def generate(module_ir: ModuleIR) -> CSource:
     lines.append('#include <stdio.h>')
     lines.append('#include <stdlib.h>')
     lines.append('#include <string.h>')
+    lines.append('#include <stdint.h>')
     # Include runtime library header
     lines.append('#include "runtime.h"')
     lines.append("")

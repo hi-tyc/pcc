@@ -1,7 +1,8 @@
 param(
   [Parameter(Mandatory=$true)][string]$MainC,
   [Parameter(Mandatory=$true)][string]$OutExe,
-  [ValidateSet("msvc","clang-cl")][string]$Toolchain = "msvc"
+  [ValidateSet("msvc","clang-cl")][string]$Toolchain = "msvc",
+  [switch]$DryRun
 )
 
 $ErrorActionPreference = "Stop"
@@ -12,17 +13,30 @@ function Ensure-Dir([string]$p) {
 }
 
 $RepoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
-$RuntimeC = Join-Path $RepoRoot "runtime\runtime.c"
 $RuntimeInc = Join-Path $RepoRoot "runtime"
 
+$RuntimeSources = @(
+  "rt_bigint.c",
+  "rt_string.c",
+  "rt_error.c",
+  "rt_exc.c",
+  "rt_math.c",
+  "rt_string_ex.c",
+  "rt_list.c",
+  "rt_dict.c"
+) | ForEach-Object { Join-Path $RuntimeInc $_ }
+
 if (!(Test-Path $MainC)) { throw "MainC not found: $MainC" }
-if (!(Test-Path $RuntimeC)) { throw "runtime.c not found: $RuntimeC" }
+foreach ($src in $RuntimeSources) {
+  if (!(Test-Path $src)) { throw "Runtime source not found: $src" }
+}
 
 Ensure-Dir $OutExe
 
 Write-Host "[build] Toolchain=$Toolchain"
 Write-Host "[build] MainC=$MainC"
 Write-Host "[build] OutExe=$OutExe"
+Write-Host "[build] RuntimeInc=$RuntimeInc"
 
 if ($Toolchain -eq "msvc") {
   if (!(Get-Command cl.exe -ErrorAction SilentlyContinue)) {
@@ -32,7 +46,19 @@ if ($Toolchain -eq "msvc") {
   # /TC = compile as C
   # /I runtime include
   # /Fe sets output exe name
-  & cl.exe /nologo /O2 /W3 /TC /I "$RuntimeInc" "$MainC" "$RuntimeC" /link /OUT:"$OutExe" | Write-Host
+  $cmd = @(
+    "cl.exe",
+    "/nologo","/O2","/W3","/TC",
+    "/I", "$RuntimeInc",
+    "$MainC"
+  ) + $RuntimeSources + @("/link", "/OUT:$OutExe")
+
+  if ($DryRun) {
+    Write-Host "[build] DRYRUN: $($cmd -join ' ')"
+    exit 0
+  }
+
+  & cl.exe /nologo /O2 /W3 /TC /I "$RuntimeInc" "$MainC" @RuntimeSources /link /OUT:"$OutExe" | Write-Host
   if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
   exit 0
 }
@@ -45,7 +71,12 @@ if ($Toolchain -eq "clang-cl") {
   }
 
   # clang-cl uses MSVC-like flags; linking may require Windows SDK libs on your machine.
-  & $clang.Source /nologo /O2 /W3 /TC /I "$RuntimeInc" "$MainC" "$RuntimeC" /link /OUT:"$OutExe" | Write-Host
+  if ($DryRun) {
+    Write-Host "[build] DRYRUN: $($clang.Source) /nologo /O2 /W3 /TC /I $RuntimeInc $MainC $($RuntimeSources -join ' ') /link /OUT:$OutExe"
+    exit 0
+  }
+
+  & $clang.Source /nologo /O2 /W3 /TC /I "$RuntimeInc" "$MainC" @RuntimeSources /link /OUT:"$OutExe" | Write-Host
   if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
   exit 0
 }

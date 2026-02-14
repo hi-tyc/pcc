@@ -7,8 +7,9 @@ It converts tokens into pcc's Intermediate Representation (IR).
 
 from typing import List, Set, Dict, Optional
 from ..ir import (
-    IntConst, FloatConst, StrConst, Var, BinOp, CmpOp, Call, AttributeAccess, MethodCall, ConstructorCall, BuiltinCall, Expr,
-    Assign, AttrAssign, MethodCallStmt, Print, If, While, ForRange, Return, Break, Continue, Stmt,
+    IntConst, StrConst, ListConst, DictConst, Subscript,
+    Var, BinOp, CmpOp, Call, AttributeAccess, MethodCall, ConstructorCall, BuiltinCall, Expr,
+    Assign, AttrAssign, MethodCallStmt, Print, If, While, ForRange, TryExcept, Raise, Return, Break, Continue, Stmt,
     FunctionDef, ClassDef, ModuleIR
 )
 from .lexer import Lexer, Token, TokenType, LexerError
@@ -348,6 +349,10 @@ class ParserV2:
                 return self._parse_break_stmt(in_loop_depth)
             elif token.value == 'continue':
                 return self._parse_continue_stmt(in_loop_depth)
+            elif token.value == 'try':
+                return self._parse_try_stmt(defined, in_loop_depth)
+            elif token.value == 'raise':
+                return self._parse_raise_stmt(defined)
             elif token.value == 'print':
                 return self._parse_print_stmt(defined)
             elif token.value == 'pass':
@@ -596,6 +601,64 @@ class ParserV2:
         if in_loop_depth <= 0:
             raise ParseError("continue outside loop", token.lineno, token.col_offset)
         return Continue(lineno=token.lineno)
+
+    def _parse_raise_stmt(self, defined: Set[str]) -> Raise:
+        """Parse raise statement (M3 subset)."""
+        tok = self._expect(TokenType.NAME, 'raise')
+        # raise <Name> [ ( "msg" ) ]
+        name_tok = self._expect(TokenType.NAME)
+        exc_name = name_tok.value
+        msg: Optional[str] = None
+        if self._match(TokenType.LPAR):
+            self._advance()
+            if not self._match(TokenType.RPAR):
+                s = self._expect(TokenType.STRING)
+                msg = s.value
+            self._expect(TokenType.RPAR)
+        return Raise(exc_name=exc_name, message=msg, lineno=tok.lineno)
+
+    def _parse_try_stmt(self, defined: Set[str], in_loop_depth: int) -> TryExcept:
+        """Parse try/except block (M3 subset)."""
+        tok = self._expect(TokenType.NAME, 'try')
+        self._expect(TokenType.COLON)
+        # Expect newline + indent
+        if self._match(TokenType.NEWLINE) or self._match(TokenType.NL):
+            self._advance()
+        self._expect(TokenType.INDENT)
+
+        defined_body = set(defined)
+        body: List[Stmt] = []
+        while not self._match(TokenType.DEDENT) and self._current() is not None:
+            if self._match(TokenType.NEWLINE) or self._match(TokenType.NL):
+                self._advance();
+                continue
+            body.append(self._parse_stmt(defined_body, in_loop_depth))
+        self._expect(TokenType.DEDENT)
+
+        # except
+        self._expect(TokenType.NAME, 'except')
+        exc_name: Optional[str] = None
+        # Optional exception class name: "except ValueError:".
+        t1 = self._peek(0)
+        t2 = self._peek(1)
+        if t1 is not None and t2 is not None and t1.type == TokenType.NAME and t2.type == TokenType.COLON:
+            exc_name = t1.value
+            self._advance()
+        self._expect(TokenType.COLON)
+        if self._match(TokenType.NEWLINE) or self._match(TokenType.NL):
+            self._advance()
+        self._expect(TokenType.INDENT)
+
+        defined_handler = set(defined)
+        handler: List[Stmt] = []
+        while not self._match(TokenType.DEDENT) and self._current() is not None:
+            if self._match(TokenType.NEWLINE) or self._match(TokenType.NL):
+                self._advance();
+                continue
+            handler.append(self._parse_stmt(defined_handler, in_loop_depth))
+        self._expect(TokenType.DEDENT)
+
+        return TryExcept(body=body, exc_name=exc_name, handler=handler, lineno=tok.lineno)
     
     def _parse_print_stmt(self, defined: Set[str]) -> Print:
         """Parse print statement."""
@@ -690,39 +753,30 @@ class ParserV2:
         if token is None:
             raise ParseError("Unexpected end of input")
         
+        expr: Optional[Expr] = None
+
         # Number literal
         if token.type == TokenType.NUMBER:
             self._advance()
-            raw = token.value
-            # Float if it contains '.' or exponent, otherwise int
-            if ('.' in raw) or ('e' in raw) or ('E' in raw):
-                try:
-                    value_f = float(raw)
-                except ValueError:
-                    raise ParseError(f"Invalid float: {raw}",
-                                   token.lineno, token.col_offset)
-                return FloatConst(value_f)
             try:
-                value = int(raw)
+                value = int(token.value)
             except ValueError:
-                raise ParseError(f"Invalid integer: {raw}",
+                raise ParseError(f"Invalid integer: {token.value}", 
                                token.lineno, token.col_offset)
-            return IntConst(value)
-
-
+            expr = IntConst(value)
         
         # String literal
-        if token.type == TokenType.STRING:
+        elif token.type == TokenType.STRING:
             self._advance()
             # Remove quotes
             value = token.value
             if (value.startswith('"') and value.endswith('"')) or \
                (value.startswith("'") and value.endswith("'")):
                 value = value[1:-1]
-            return StrConst(value)
+            expr = StrConst(value)
         
         # Identifier or function call
-        if token.type == TokenType.NAME:
+        elif token.type == TokenType.NAME:
             name = token.value
             self._advance()
             
@@ -734,37 +788,87 @@ class ParserV2:
             
             # Function call or constructor
             if self._match(TokenType.LPAR):
-                return self._parse_call(name, defined)
-            
-            # Attribute access
-            if self._match(TokenType.DOT):
-                self._advance()
-                attr_token = self._expect(TokenType.NAME)
-                
-                # Method call
-                if self._match(TokenType.LPAR):
-                    return self._parse_method_call(name, attr_token.value, defined)
-                
+                expr = self._parse_call(name, defined)
+            else:
                 # Attribute access
-                if name not in defined:
-                    raise ParseError(f"Variable used before assignment: {name}",
-                                   token.lineno, token.col_offset)
-                return AttributeAccess(obj=name, attr=attr_token.value)
+                if self._match(TokenType.DOT):
+                    self._advance()
+                    attr_token = self._expect(TokenType.NAME)
+                    
+                    # Method call
+                    if self._match(TokenType.LPAR):
+                        expr = self._parse_method_call(name, attr_token.value, defined)
+                    else:
+                        # Attribute access
+                        if name not in defined:
+                            raise ParseError(f"Variable used before assignment: {name}",
+                                           token.lineno, token.col_offset)
+                        expr = AttributeAccess(obj=name, attr=attr_token.value)
+                else:
+                    # Variable reference
+                    if name not in defined:
+                        raise ParseError(f"Variable used before assignment: {name}",
+                                       token.lineno, token.col_offset)
+                    expr = Var(name)
             
-            # Variable reference
-            if name not in defined:
-                raise ParseError(f"Variable used before assignment: {name}",
-                               token.lineno, token.col_offset)
-            return Var(name)
-        
         # Parenthesized expression
-        if token.type == TokenType.LPAR:
+        elif token.type == TokenType.LPAR:
             self._advance()
-            expr = self._parse_expr(defined)
+            inner = self._parse_expr(defined)
             self._expect(TokenType.RPAR)
-            return expr
+            expr = inner
+
+        # List literal
+        elif token.type == TokenType.LBRACKET:
+            self._advance()
+            elements: List[Expr] = []
+            if not self._match(TokenType.RBRACKET):
+                while True:
+                    elements.append(self._parse_expr(defined))
+                    if self._match(TokenType.COMMA):
+                        self._advance()
+                        if self._match(TokenType.RBRACKET):
+                            break
+                        continue
+                    break
+            self._expect(TokenType.RBRACKET)
+            expr = ListConst(elements)
+
+        # Dict literal
+        elif token.type == TokenType.LBRACE:
+            self._advance()
+            keys: List[Expr] = []
+            values: List[Expr] = []
+            if not self._match(TokenType.RBRACE):
+                while True:
+                    k = self._parse_expr(defined)
+                    self._expect(TokenType.COLON)
+                    v = self._parse_expr(defined)
+                    keys.append(k)
+                    values.append(v)
+                    if self._match(TokenType.COMMA):
+                        self._advance()
+                        if self._match(TokenType.RBRACE):
+                            break
+                        continue
+                    break
+            self._expect(TokenType.RBRACE)
+            expr = DictConst(keys=keys, values=values)
         
-        raise ParseError(f"Unexpected token: {token}", token.lineno, token.col_offset)
+        if expr is None:
+            raise ParseError(f"Unexpected token: {token}", token.lineno, token.col_offset)
+
+        # Postfix subscripting: var[expr]
+        while self._match(TokenType.LBRACKET):
+            start_tok = self._advance()
+            idx = self._parse_expr(defined)
+            self._expect(TokenType.RBRACKET)
+            if isinstance(expr, Var):
+                expr = Subscript(obj=expr.name, index=idx)
+            else:
+                raise ParseError("Only variable subscripting is supported", start_tok.lineno, start_tok.col_offset)
+
+        return expr
     
     # Builtin functions that don't need to be defined
     _BUILTINS = {'len', 'abs', 'min', 'max', 'pow', 'str', 'int'}

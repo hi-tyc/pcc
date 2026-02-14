@@ -180,6 +180,8 @@ print(c_source.c_source)
   - Operations: `+`, `-`, `*`, `//`, `%`
   - Comparisons: `==`, `!=`, `<`, `<=`, `>`, `>=`
 - **Strings**: Literals, variables, concatenation (`+`)
+- **Lists (M2 subset)**: List literals `[...]` of integers, `len(list)`, `list.append(x)`, indexing `list[i]` (supports negative indices)
+- **Dictionaries (M2 subset)**: Dict literals `{ "k": v }` with string keys and integer values, `len(dict)`, indexing `dict[key]`
 - **Booleans**: Result of comparisons (0/1 integers)
 
 ### Statements
@@ -210,7 +212,8 @@ def function_name(param1, param2):
 - No `//` or `%` in expressions (only in statements)
 - No `int + str` or `str + int` mixing
 - No string comparison
-- No classes, lists, dictionaries, tuples
+- No classes or tuples
+- List/dict support is currently limited (see "Lists (M2 subset)" / "Dictionaries (M2 subset)" above)
 - No exception handling, imports, or decorators
 - No keyword arguments
 
@@ -415,7 +418,7 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 ## Roadmap
 
-- [x] Float support (float literals + arithmetic/comparison + print; int→float promotion in fast backend)
+- [ ] Float support
 - [ ] List/dict support
 - [ ] Exception handling
 - [ ] Module imports
@@ -423,21 +426,6 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 - [ ] LLVM backend option
 - [ ] WebAssembly target
 
-
-### Float support notes
-
-- Supported in the **fast backend**: float literals (e.g. `1.5`, `2e-3`), `+ - * // %`, comparisons, and `print`.
-- Mixed int/float arithmetic is supported via **int → float promotion**.
-- The BigInt (HPF) backend currently supports floats, but **does not** support mixing `rt_int` with floats yet.
-
-<<<<<<< HEAD
-Additional HPF backend notes:
-
-- BigInt (`rt_int`) expressions now consistently evaluate to **pointers** (`rt_int*`) in generated C, matching the runtime API.
-- Basic class fixtures are supported in HPF mode (no-arg constructors, field access/assignment, and simple methods).
-
-=======
->>>>>>> 6a19ffcdf73eb9eff11c818740ff107df8452199
 ---
 
 **Note**: This is an MVP (Minimum Viable Product) implementation. The supported Python subset is intentionally limited for simplicity and performance.

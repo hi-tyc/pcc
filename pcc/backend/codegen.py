@@ -10,8 +10,8 @@ from typing import List, Dict, Optional, Set, Tuple
 
 from ..ir import (
     ModuleIR, FunctionDef, ClassDef, Stmt, Expr,
-    IntConst, FloatConst, StrConst, Var, BinOp, CmpOp, Call, AttributeAccess, MethodCall, ConstructorCall, BuiltinCall,
-    Assign, AttrAssign, MethodCallStmt, Print, If, While, ForRange, Return, Break, Continue
+    IntConst, StrConst, Var, BinOp, CmpOp, Call, AttributeAccess, MethodCall, ConstructorCall, BuiltinCall,
+    Assign, AttrAssign, MethodCallStmt, Print, If, While, ForRange, TryExcept, Raise, Return, Break, Continue
 )
 
 
@@ -101,12 +101,6 @@ def _expr_produces_string(expr: Expr, var_types: Dict[str, str]) -> bool:
     Returns:
         bool: True if the expression produces a string
     """
-    if isinstance(expr, FloatConst):
-        v = repr(float(expr.value))
-        if ("." not in v) and ("e" not in v) and ("E" not in v):
-            v = v + ".0"
-        return v
-
     if isinstance(expr, StrConst):
         return True
     if isinstance(expr, Var):
@@ -117,17 +111,6 @@ def _expr_produces_string(expr: Expr, var_types: Dict[str, str]) -> bool:
         right_is_str = _expr_produces_string(expr.right, var_types)
         return left_is_str and right_is_str
     return False
-
-def _expr_produces_float(expr: Expr, var_types: Dict[str, str]) -> bool:
-    """Check if an expression produces a floating-point (double) result."""
-    if isinstance(expr, FloatConst):
-        return True
-    if isinstance(expr, Var):
-        return var_types.get(expr.name) == "double"
-    if isinstance(expr, BinOp) and expr.op in {"+", "-", "*", "//", "%"}:
-        return _expr_produces_float(expr.left, var_types) or _expr_produces_float(expr.right, var_types)
-    return False
-
 
 
 def _emit_expr(
@@ -160,12 +143,6 @@ def _emit_expr(
             lines.append(f'    rt_int_from_dec(&{temp}, "{expr.value}");')
         return f"&{temp}"
 
-    if isinstance(expr, FloatConst):
-        v = repr(float(expr.value))
-        if ("." not in v) and ("e" not in v) and ("E" not in v):
-            v = v + ".0"
-        return v
-
     if isinstance(expr, StrConst):
         temp = state.next_temp()
         # Escape the string for C (handle backslashes, quotes, newlines, etc.)
@@ -177,16 +154,6 @@ def _emit_expr(
         ctype = _ctype_for_var(expr.name, var_types)
         if ctype == "rt_str":
             return expr.name
-        if ctype == "double":
-            return expr.name
-<<<<<<< HEAD
-        # Objects are represented as pointers (pcc_class_X*). In var_types we
-        # store "pcc_class_X" as a tag, but the emitted C variable is still a
-        # pointer. Do NOT take address-of in that case.
-        if ctype.startswith("pcc_class_"):
-            return expr.name
-=======
->>>>>>> 6a19ffcdf73eb9eff11c818740ff107df8452199
         return f"&{expr.name}"
 
     if isinstance(expr, BinOp):
@@ -217,45 +184,8 @@ def _emit_expr(
             lines.append(f"    rt_str {temp} = rt_str_concat({left}, {right});")
             return temp
         else:
-
-            # Floating-point arithmetic if either side is float.
-            # NOTE: In HPF mode, integers are rt_int; mixing rt_int and float is not supported yet.
-            left_is_float = _expr_produces_float(expr.left, var_types)
-            right_is_float = _expr_produces_float(expr.right, var_types)
-            if left_is_float or right_is_float:
-                # Only allow float-vs-float in HPF mode for now.
-                if not (left_is_float and right_is_float):
-                    raise ValueError("Float operations are supported only between floats in HPF mode (no int<->float mixing yet).")
-
-                left_d = left
-                right_d = right
-                temp = state.next_temp(type_hint="double")
-                lines.append(f"    double {temp};")
-
-                if expr.op in {"+", "-", "*"}:
-                    lines.append(f"    {temp} = {left_d} {expr.op} {right_d};")
-                elif expr.op == "//":
-                    qtmp = state.next_temp(type_hint="double")
-                    ttmp = state.next_temp(type_hint="long long")
-                    lines.append(f"    double {qtmp} = {left_d} / {right_d};")
-                    lines.append(f"    long long {ttmp} = (long long){qtmp};")
-                    lines.append(f"    if ({qtmp} < 0.0 && (double){ttmp} != {qtmp}) {{ {ttmp} -= 1; }}")
-                    lines.append(f"    {temp} = (double){ttmp};")
-                elif expr.op == "%":
-                    qtmp = state.next_temp(type_hint="double")
-                    ttmp = state.next_temp(type_hint="long long")
-                    lines.append(f"    double {qtmp} = {left_d} / {right_d};")
-                    lines.append(f"    long long {ttmp} = (long long){qtmp};")
-                    lines.append(f"    if ({qtmp} < 0.0 && (double){ttmp} != {qtmp}) {{ {ttmp} -= 1; }}")
-                    lines.append(f"    {temp} = {left_d} - {right_d} * (double){ttmp};")
-                else:
-                    raise ValueError(f"Unsupported binary operator: {expr.op}")
-                return temp
-
             # Integer arithmetic
-            temp = state.next_temp()
             lines.append(f"    rt_int {temp}; rt_int_init(&{temp});")
-
             if expr.op == "+":
                 lines.append(f"    rt_int_add(&{temp}, {left}, {right});")
             elif expr.op == "-":
@@ -268,81 +198,71 @@ def _emit_expr(
                 lines.append(f"    rt_int_mod(&{temp}, {left}, {right});")
             else:
                 raise ValueError(f"Unsupported binary operator: {expr.op}")
-
-<<<<<<< HEAD
-            # All BigInt operations produce an rt_int temporary. Return it as a
-            # pointer, consistent with other rt_int-producing expressions.
             return f"&{temp}"
-=======
-            return temp
-
-
->>>>>>> 6a19ffcdf73eb9eff11c818740ff107df8452199
-
-    if isinstance(expr, ConstructorCall):
-        # Class constructor call: ClassName(...)
-        # Current fixtures only require no-arg constructors.
-        if expr.args:
-            raise ValueError("Constructor arguments are not supported yet.")
-        return f"pcc_new_{expr.class_name}()"
-
-    if isinstance(expr, AttributeAccess):
-        # Attribute access: obj.attr
-        # Objects are pointers to pcc_class_X.
-        return f"&{expr.obj}->{expr.attr}"
-
-
 
     if isinstance(expr, CmpOp):
         left = _emit_expr(expr.left, lines, state, var_types, fn_sigs)
         right = _emit_expr(expr.right, lines, state, var_types, fn_sigs)
+        temp = state.next_temp()
+        lines.append(f"    int {temp} = rt_int_cmp({left}, {right});")
 
-        # Float comparisons (only float-vs-float supported in this backend for now)
-        if _expr_produces_float(expr.left, var_types) or _expr_produces_float(expr.right, var_types):
-            if not (_expr_produces_float(expr.left, var_types) and _expr_produces_float(expr.right, var_types)):
-                raise ValueError("Float comparisons are supported only between floats in this backend (no int<->float mixing yet).")
-            temp = state.next_temp(type_hint="int")
-            lines.append(f"    int {temp} = ({left} {expr.op} {right});")
-            return f"({temp} != 0)"
-
-        # Integer (rt_int) comparisons
-        temp = state.next_temp(type_hint="int")
-        if expr.op == "==":
-            lines.append(f"    int {temp} = (rt_int_cmp({left}, {right}) == 0);")
-        elif expr.op == "!=":
-            lines.append(f"    int {temp} = (rt_int_cmp({left}, {right}) != 0);")
-        elif expr.op == "<":
-            lines.append(f"    int {temp} = (rt_int_cmp({left}, {right}) < 0);")
-        elif expr.op == "<=":
-            lines.append(f"    int {temp} = (rt_int_cmp({left}, {right}) <= 0);")
-        elif expr.op == ">":
-            lines.append(f"    int {temp} = (rt_int_cmp({left}, {right}) > 0);")
-        elif expr.op == ">=":
-            lines.append(f"    int {temp} = (rt_int_cmp({left}, {right}) >= 0);")
-        else:
-            raise ValueError(f"Unsupported comparison operator: {expr.op}")
-        return f"({temp} != 0)"
+        op_map = {
+            "==": f"({temp} == 0)",
+            "!=": f"({temp} != 0)",
+            "<": f"({temp} < 0)",
+            "<=": f"({temp} <= 0)",
+            ">": f"({temp} > 0)",
+            ">=": f"({temp} >= 0)",
+        }
+        return op_map.get(expr.op, f"({temp} == 0)")
 
     if isinstance(expr, Call):
-        # Emit args as rt_int pointers
         arg_exprs = []
         for arg in expr.args:
-            if isinstance(arg, IntConst):
-                tmp = state.next_temp()
-                lines.append(f"    rt_int {tmp}; rt_int_init(&{tmp});")
-                if -9223372036854775808 <= arg.value <= 9223372036854775807:
-                    lines.append(f"    rt_int_set_si(&{tmp}, {arg.value}LL);")
-                else:
-                    lines.append(f'    rt_int_from_dec(&{tmp}, "{arg.value}");')
-                arg_exprs.append(f"&{tmp}")
-            else:
-                arg_exprs.append(_emit_expr(arg, lines, state, var_types, fn_sigs))
+            arg_expr = _emit_expr(arg, lines, state, var_types, fn_sigs)
+            arg_exprs.append(arg_expr)
 
         temp = state.next_temp()
         lines.append(f"    rt_int {temp}; rt_int_init(&{temp});")
+
         args_str = ", ".join(arg_exprs)
         lines.append(f"    pcc_fn_{expr.func}(&{temp}, {args_str});")
         return f"&{temp}"
+
+    if isinstance(expr, AttributeAccess):
+        # Access object field: obj.attr
+        # The object variable holds a pointer to the struct
+        obj_type = var_types.get(expr.obj, "rt_int")
+        if obj_type.startswith("pcc_class_"):
+            # Return address of the field for int types
+            return f"&{expr.obj}->{expr.attr}"
+        raise ValueError(f"Attribute access on non-object type: {obj_type}")
+
+    if isinstance(expr, MethodCall):
+        # Method call: obj.method(args)
+        arg_exprs = []
+        for arg in expr.args:
+            arg_expr = _emit_expr(arg, lines, state, var_types, fn_sigs)
+            arg_exprs.append(arg_expr)
+
+        temp = state.next_temp()
+        lines.append(f"    rt_int {temp}; rt_int_init(&{temp});")
+
+        args_str = ", ".join(arg_exprs)
+        lines.append(f"    pcc_method_{expr.obj}_{expr.method}({expr.obj}, &{temp}, {args_str});")
+        return f"&{temp}"
+
+    if isinstance(expr, ConstructorCall):
+        # Constructor call: ClassName(args)
+        temp = state.next_temp(type_hint=f"pcc_class_{expr.class_name}")
+
+        # Allocate and initialize the object
+        lines.append(f"    pcc_class_{expr.class_name}* {temp} = pcc_new_{expr.class_name}();")
+
+        # Store the object pointer in var_types
+        var_types[temp] = f"pcc_class_{expr.class_name}"
+
+        return temp
 
     if isinstance(expr, BuiltinCall):
         return _emit_builtin_call(expr, lines, state, var_types)
@@ -488,6 +408,17 @@ def _emit_block(
     if declared_vars is None:
         declared_vars = set()
 
+    def _exc_enum(exc_name: str) -> str:
+        mapping = {
+            "Exception": "RT_EXC_Exception",
+            "ZeroDivisionError": "RT_EXC_ZeroDivisionError",
+            "IndexError": "RT_EXC_IndexError",
+            "KeyError": "RT_EXC_KeyError",
+            "TypeError": "RT_EXC_TypeError",
+            "ValueError": "RT_EXC_ValueError",
+        }
+        return mapping.get(exc_name, "RT_EXC_Exception")
+
     for stmt in stmts:
         if isinstance(stmt, Assign):
             expr_result = _emit_expr(stmt.expr, lines, state, var_types, fn_sigs)
@@ -561,12 +492,6 @@ def _emit_block(
             is_str = False
             if isinstance(stmt.expr, StrConst):
                 is_str = True
-            elif _expr_produces_float(stmt.expr, var_types):
-                var_types[stmt.name] = "double"
-                if _expr_produces_float(stmt.expr, var_types):
-                    lines.append(f"    double {stmt.name} = {expr_result};")
-                else:
-                    lines.append(f"    double {stmt.name} = (double)({expr_result});")
             elif isinstance(stmt.expr, Var) and var_types.get(stmt.expr.name) == "rt_str":
                 is_str = True
             elif expr_result.startswith("pcc_tmp_") and state.get_temp_type(expr_result) == "rt_str":
@@ -658,6 +583,46 @@ def _emit_block(
 
             lines.append(f"    rt_int_clear(&{stop_temp});")
             lines.append(f"    rt_int_clear(&{step_temp});")
+
+        elif isinstance(stmt, TryExcept):
+            ctx = state.next_temp(type_hint="rt_try_ctx")
+            flag = state.next_temp(type_hint="int")
+            lines.append(f"    rt_try_ctx {ctx};")
+            lines.append(f"    int {flag} = rt_try_push(&{ctx});")
+            lines.append(f"    if ({flag} == 0) {{")
+            body_var_types = dict(var_types)
+            body_declared = set(declared_vars)
+            _emit_block(stmt.body, lines, state, body_var_types, fn_sigs,
+                       in_loop, break_label, continue_label, body_declared)
+            lines.append(f"        rt_try_pop(&{ctx});")
+            lines.append("    } else {")
+            if stmt.exc_name is None:
+                lines.append("        rt_exc_clear();")
+                lines.append(f"        rt_try_pop(&{ctx});")
+                handler_var_types = dict(var_types)
+                handler_declared = set(declared_vars)
+                _emit_block(stmt.handler, lines, state, handler_var_types, fn_sigs,
+                           in_loop, break_label, continue_label, handler_declared)
+            else:
+                enumv = _exc_enum(stmt.exc_name)
+                lines.append(f"        if (rt_exc_is({enumv})) {{")
+                lines.append("            rt_exc_clear();")
+                lines.append(f"            rt_try_pop(&{ctx});")
+                handler_var_types = dict(var_types)
+                handler_declared = set(declared_vars)
+                _emit_block(stmt.handler, lines, state, handler_var_types, fn_sigs,
+                           in_loop, break_label, continue_label, handler_declared)
+                lines.append("        } else {")
+                lines.append(f"            rt_try_pop(&{ctx});")
+                lines.append("            rt_reraise();")
+                lines.append("        }")
+            lines.append("    }")
+
+        elif isinstance(stmt, Raise):
+            enumv = _exc_enum(stmt.exc_name)
+            msg = stmt.message if stmt.message is not None else ""
+            msg_c = msg.replace('\\', r'\\').replace('"', r'\\"')
+            lines.append(f"    rt_raise({enumv}, \"{msg_c}\", \"<source>\", {stmt.lineno});")
 
         elif isinstance(stmt, Return):
             expr_result = _emit_expr(stmt.expr, lines, state, var_types, fn_sigs)
