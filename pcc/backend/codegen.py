@@ -13,6 +13,15 @@ from ..ir import (
     IntConst, StrConst, Var, BinOp, CmpOp, Call, AttributeAccess, MethodCall, ConstructorCall, BuiltinCall,
     Assign, AttrAssign, MethodCallStmt, Print, If, While, ForRange, Return, Break, Continue
 )
+from ..utils.codegen_base import (
+    CodegenState,
+    ctype_for_var,
+    expr_produces_string,
+    fits_in_int64,
+    escape_c_string,
+    INT64_MIN,
+    INT64_MAX,
+)
 
 
 @dataclass(frozen=True)
@@ -25,98 +34,10 @@ class CSource:
     c_source: str
 
 
-class _CodegenState:
-    """Internal state for code generation.
-
-    Tracks temporary variable and label counters to generate unique names,
-    and tracks the types of temporaries.
-    """
-
-    def __init__(self) -> None:
-        self.temp_counter = 0
-        self.label_counter = 0
-        self.temp_types: Dict[str, str] = {}  # temp_name -> type ("rt_int" or "rt_str")
-
-    def next_temp(self, type_hint: str = "rt_int") -> str:
-        """Generate a unique temporary variable name.
-
-        Args:
-            type_hint: The type of the temporary ("rt_int" or "rt_str")
-
-        Returns:
-            str: A unique temporary name like "pcc_tmp_1"
-        """
-        self.temp_counter += 1
-        temp_name = f"pcc_tmp_{self.temp_counter}"
-        self.temp_types[temp_name] = type_hint
-        return temp_name
-
-    def get_temp_type(self, temp_name: str) -> str:
-        """Get the type of a temporary variable.
-
-        Args:
-            temp_name: The name of the temporary
-
-        Returns:
-            str: The type ("rt_int" or "rt_str")
-        """
-        return self.temp_types.get(temp_name, "rt_int")
-
-    def next_label(self, prefix: str) -> str:
-        """Generate a unique label name.
-
-        Args:
-            prefix: Prefix for the label (e.g., "while_start")
-
-        Returns:
-            str: A unique label name like "while_start_1"
-        """
-        self.label_counter += 1
-        return f"{prefix}_{self.label_counter}"
-
-
-def _ctype_for_var(name: str, var_types: Dict[str, str]) -> str:
-    """Get the C type for a variable.
-
-    Args:
-        name: Variable name
-        var_types: Mapping of variable names to their C types
-
-    Returns:
-        str: The C type ("rt_int" or "rt_str")
-    """
-    return var_types.get(name, "rt_int")
-
-
-def _expr_produces_string(expr: Expr, var_types: Dict[str, str]) -> bool:
-    """Check if an expression produces a string result.
-
-    This is used to determine if a BinOp expression results in a string,
-    which happens when both operands are strings and the operator is '+'.
-
-    Args:
-        expr: The expression to check
-        var_types: Mapping of variable names to their C types
-
-    Returns:
-        bool: True if the expression produces a string
-    """
-    if isinstance(expr, StrConst):
-        return True
-    if isinstance(expr, Var):
-        return var_types.get(expr.name) == "rt_str"
-    if isinstance(expr, BinOp) and expr.op == "+":
-        # String concatenation: both operands must be strings
-        left_is_str = _expr_produces_string(expr.left, var_types)
-        right_is_str = _expr_produces_string(expr.right, var_types)
-        return left_is_str and right_is_str
-    return False
-
-
 def _emit_expr(
     expr: Expr,
     lines: List[str],
-    state: _CodegenState,
+    state: CodegenState,
     var_types: Dict[str, str],
     fn_sigs: Dict[str, int]
 ) -> str:
@@ -135,23 +56,20 @@ def _emit_expr(
     if isinstance(expr, IntConst):
         temp = state.next_temp()
         lines.append(f"    rt_int {temp}; rt_int_init(&{temp});")
-        # Check if value fits in int64_t
-        if -9223372036854775808 <= expr.value <= 9223372036854775807:
+        if fits_in_int64(expr.value):
             lines.append(f"    rt_int_set_si(&{temp}, {expr.value}LL);")
         else:
-            # Use decimal string for large integers
             lines.append(f'    rt_int_from_dec(&{temp}, "{expr.value}");')
         return f"&{temp}"
 
     if isinstance(expr, StrConst):
-        temp = state.next_temp()
-        # Escape the string for C (handle backslashes, quotes, newlines, etc.)
-        escaped = expr.value.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n').replace('\t', '\\t')
+        temp = state.next_temp(type_hint="rt_str")
+        escaped = escape_c_string(expr.value)
         lines.append(f'    rt_str {temp} = rt_str_from_cstr("{escaped}");')
         return temp
 
     if isinstance(expr, Var):
-        ctype = _ctype_for_var(expr.name, var_types)
+        ctype = ctype_for_var(expr.name, var_types)
         if ctype == "rt_str":
             return expr.name
         return f"&{expr.name}"
@@ -168,7 +86,7 @@ def _emit_expr(
             left_is_str = True
         if isinstance(expr.left, BinOp):
             # Recursively check if left sub-expression produces a string
-            left_is_str = _expr_produces_string(expr.left, var_types)
+            left_is_str = expr_produces_string(expr.left, var_types)
 
         # Right operand is a string if it's a StrConst, a string Var, or a string temp
         right_is_str = isinstance(expr.right, StrConst)
@@ -176,7 +94,7 @@ def _emit_expr(
             right_is_str = True
         if isinstance(expr.right, BinOp):
             # Recursively check if right sub-expression produces a string
-            right_is_str = _expr_produces_string(expr.right, var_types)
+            right_is_str = expr_produces_string(expr.right, var_types)
 
         if left_is_str and right_is_str and expr.op == "+":
             # String concatenation
@@ -273,7 +191,7 @@ def _emit_expr(
 def _emit_builtin_call(
     expr: BuiltinCall,
     lines: List[str],
-    state: _CodegenState,
+    state: CodegenState,
     var_types: Dict[str, str]
 ) -> str:
     """Emit code for a builtin function call."""
@@ -384,7 +302,7 @@ def _collect_locals_in_stmt(stmt: Stmt) -> Set[Tuple[str, str]]:
 def _emit_block(
     stmts: List[Stmt],
     lines: List[str],
-    state: _CodegenState,
+    state: CodegenState,
     var_types: Dict[str, str],
     fn_sigs: Dict[str, int],
     in_loop: bool = False,
@@ -671,7 +589,7 @@ def _emit_method(class_def: ClassDef, fn: FunctionDef, fn_sigs: Dict[str, int]) 
         params = ", " + params
     lines.append(f"static void pcc_method_{class_def.name}_{fn.name}(pcc_class_{class_def.name}* self, rt_int* out{params}) {{")
 
-    state = _CodegenState()
+    state = CodegenState()
     var_types: Dict[str, str] = {}
 
     # 'self' is available in the method
@@ -714,7 +632,7 @@ def _emit_function(fn: FunctionDef, fn_sigs: Dict[str, int]) -> List[str]:
     params = ", ".join([f"rt_int* pcc_p_{p}" for p in fn.params])
     lines.append(f"static void pcc_fn_{fn.name}(rt_int* out, {params}) {{")
 
-    state = _CodegenState()
+    state = CodegenState()
     var_types: Dict[str, str] = {}
 
     # Initialize parameters
@@ -809,7 +727,7 @@ class CodeGenerator:
         # Emit main function
         lines.append("int main(void) {")
 
-        state = _CodegenState()
+        state = CodegenState()
         var_types: Dict[str, str] = {}
 
         main_declared: Set[str] = set()

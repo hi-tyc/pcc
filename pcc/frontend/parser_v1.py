@@ -516,9 +516,6 @@ class Parser:
         right = self._parse_expr(node.comparators[0], defined)
         return CmpOp(op_s, left, right)
 
-    # Builtin functions that don't need to be defined
-    _BUILTINS = {'len', 'abs', 'min', 'max', 'pow', 'str', 'int'}
-
     def _parse_call(self, node: ast.Call, defined: Set[str]) -> Expr:
         """Parse a function call, method call, constructor call, or builtin call."""
         # Method call: obj.method(args)
@@ -548,8 +545,9 @@ class Parser:
         if fname == "print":
             raise ParseError("print(...) is only supported as a statement, not as an expression")
 
-        # Check if it's a builtin function
-        if fname in self._BUILTINS:
+        from ..utils import is_builtin
+        
+        if is_builtin(fname):
             if node.keywords:
                 raise ParseError("Keyword arguments are not supported in builtin calls")
             args = [self._parse_expr(a, defined) for a in node.args]
@@ -580,30 +578,12 @@ class Parser:
 
     def _parse_builtin(self, name: str, args: List[Expr], node: ast.Call) -> BuiltinCall:
         """Parse builtin function call with argument validation."""
-        # Validate argument counts for builtins
-        builtin_arity = {
-            'len': 1,
-            'abs': 1,
-            'str': 1,
-            'int': 1,
-            'pow': (2, 3),  # 2 or 3 args
-            'min': (1, None),  # 1 or more
-            'max': (1, None),  # 1 or more
-        }
-
-        arity = builtin_arity.get(name)
-        if arity is not None:
-            if isinstance(arity, int):
-                if len(args) != arity:
-                    lineno = getattr(node, 'lineno', '?')
-                    raise ParseError(f"Line {lineno}: builtin '{name}' expects {arity} argument(s), got {len(args)}")
-            elif isinstance(arity, tuple):
-                min_args, max_args = arity
-                if len(args) < min_args:
-                    lineno = getattr(node, 'lineno', '?')
-                    raise ParseError(f"Line {lineno}: builtin '{name}' expects at least {min_args} argument(s), got {len(args)}")
-                if max_args is not None and len(args) > max_args:
-                    lineno = getattr(node, 'lineno', '?')
-                    raise ParseError(f"Line {lineno}: builtin '{name}' expects at most {max_args} argument(s), got {len(args)}")
-
+        from ..utils import validate_builtin_args
+        
+        lineno = getattr(node, 'lineno', None)
+        try:
+            validate_builtin_args(name, len(args), lineno)
+        except ValueError as e:
+            raise ParseError(str(e))
+        
         return BuiltinCall(name=name, args=args)

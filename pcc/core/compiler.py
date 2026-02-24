@@ -292,17 +292,27 @@ class Compiler:
         if not gcc:
             raise RuntimeError("gcc not found. Install GCC or MinGW-w64.")
 
+        runtime_dir = runtime_inc
+        
+        static_lib = runtime_dir / "lib" / "libpcc_runtime.a"
+        
+        use_static_lib = static_lib.exists()
+        
         cmd = [
             gcc,
-            "-O2",
+            "-O3",
             "-Wall",
             "-std=c11",
             "-I", str(runtime_inc),
             str(main_c),
         ]
-        # Add modular runtime sources
-        cmd.extend(str(src) for src in runtime_sources)
-        # Add output option
+        
+        if use_static_lib:
+            cmd.extend(["-L", str(static_lib.parent)])
+            cmd.extend(["-l", "pcc_runtime"])
+        else:
+            cmd.extend(str(src) for src in runtime_sources)
+        
         cmd.extend(["-o", str(out_exe)])
 
         result = subprocess.run(cmd, capture_output=True, text=True)

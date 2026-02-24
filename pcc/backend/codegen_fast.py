@@ -13,6 +13,15 @@ from ..ir import (
     IntConst, StrConst, Var, BinOp, CmpOp, Call, AttributeAccess, MethodCall, ConstructorCall, BuiltinCall,
     Assign, AttrAssign, MethodCallStmt, Print, If, While, ForRange, Return, Break, Continue
 )
+from ..utils.codegen_base import (
+    CodegenState,
+    ctype_for_var,
+    expr_produces_string,
+    fits_in_int64,
+    escape_c_string,
+    INT64_MIN,
+    INT64_MAX,
+)
 
 
 @dataclass(frozen=True)
@@ -21,73 +30,26 @@ class CSource:
     c_source: str
 
 
-class _CodegenState:
-    """Internal state for code generation."""
-
-    def __init__(self) -> None:
-        self.temp_counter = 0
-        self.label_counter = 0
-        self.temp_types: Dict[str, str] = {}  # temp_name -> type ("long long" or "rt_str")
-
-    def next_temp(self, type_hint: str = "long long") -> str:
-        """Generate a unique temporary variable name."""
-        self.temp_counter += 1
-        temp_name = f"pcc_tmp_{self.temp_counter}"
-        self.temp_types[temp_name] = type_hint
-        return temp_name
-
-    def get_temp_type(self, temp_name: str) -> str:
-        """Get the type of a temporary variable."""
-        return self.temp_types.get(temp_name, "long long")
-
-    def next_label(self, prefix: str) -> str:
-        """Generate a unique label name."""
-        self.label_counter += 1
-        return f"{prefix}_{self.label_counter}"
-
-
-def _ctype_for_var(name: str, var_types: Dict[str, str]) -> str:
-    """Get the C type for a variable."""
-    return var_types.get(name, "long long")
-
-
-def _expr_produces_string(expr: Expr, var_types: Dict[str, str]) -> bool:
-    """Check if an expression produces a string result."""
-    if isinstance(expr, StrConst):
-        return True
-    if isinstance(expr, Var):
-        return var_types.get(expr.name) == "rt_str"
-    if isinstance(expr, BinOp) and expr.op == "+":
-        left_is_str = _expr_produces_string(expr.left, var_types)
-        right_is_str = _expr_produces_string(expr.right, var_types)
-        return left_is_str and right_is_str
-    return False
-
-
 def _needs_hpf(expr: Expr) -> bool:
     """Check if expression needs HPF (value exceeds 64-bit range)."""
     if isinstance(expr, IntConst):
-        return not (-9223372036854775808 <= expr.value <= 9223372036854775807)
+        return not fits_in_int64(expr.value)
     return False
 
 
 def _emit_expr(
     expr: Expr,
     lines: List[str],
-    state: _CodegenState,
+    state: CodegenState,
     var_types: Dict[str, str],
     fn_sigs: Dict[str, int]
 ) -> str:
     """Emit code for an expression and return the C expression string."""
     
-    # Integer constant - use long long by default, HPF only for large values
     if isinstance(expr, IntConst):
-        # Check if value fits in int64_t
-        if -9223372036854775808 <= expr.value <= 9223372036854775807:
-            # Use native long long
+        if fits_in_int64(expr.value):
             return f"{expr.value}LL"
         else:
-            # Use HPF for large integers
             temp = state.next_temp(type_hint="rt_int")
             lines.append(f"    rt_int {temp}; rt_int_init(&{temp});")
             lines.append(f'    rt_int_from_dec(&{temp}, "{expr.value}");')
@@ -95,18 +57,17 @@ def _emit_expr(
 
     if isinstance(expr, StrConst):
         temp = state.next_temp(type_hint="rt_str")
-        escaped = expr.value.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n').replace('\t', '\\t')
+        escaped = escape_c_string(expr.value)
         lines.append(f'    rt_str {temp} = rt_str_from_cstr("{escaped}");')
         return temp
 
     if isinstance(expr, Var):
-        ctype = _ctype_for_var(expr.name, var_types)
+        ctype = ctype_for_var(expr.name, var_types, default="long long")
         if ctype == "rt_str":
             return expr.name
         elif ctype == "rt_int":
             return f"&{expr.name}"
         else:
-            # long long - return directly
             return expr.name
 
     if isinstance(expr, BinOp):
@@ -118,13 +79,13 @@ def _emit_expr(
         if isinstance(expr.left, Var) and var_types.get(expr.left.name) == "rt_str":
             left_is_str = True
         if isinstance(expr.left, BinOp):
-            left_is_str = _expr_produces_string(expr.left, var_types)
+            left_is_str = expr_produces_string(expr.left, var_types)
 
         right_is_str = isinstance(expr.right, StrConst)
         if isinstance(expr.right, Var) and var_types.get(expr.right.name) == "rt_str":
             right_is_str = True
         if isinstance(expr.right, BinOp):
-            right_is_str = _expr_produces_string(expr.right, var_types)
+            right_is_str = expr_produces_string(expr.right, var_types)
 
         if left_is_str and right_is_str and expr.op == "+":
             # String concatenation
@@ -233,7 +194,7 @@ def _emit_expr(
 def _emit_builtin_call(
     expr: BuiltinCall,
     lines: List[str],
-    state: _CodegenState,
+    state: CodegenState,
     var_types: Dict[str, str],
     fn_sigs: Dict[str, int]
 ) -> str:
@@ -323,7 +284,7 @@ def _emit_builtin_call(
 def _emit_stmt(
     stmt: Stmt,
     lines: List[str],
-    state: _CodegenState,
+    state: CodegenState,
     var_types: Dict[str, str],
     fn_sigs: Dict[str, int],
     in_loop: bool = False,
@@ -351,7 +312,7 @@ def _emit_stmt(
             if isinstance(stmt.expr, StrConst):
                 var_types[stmt.name] = "rt_str"
                 lines.append(f"    rt_str {stmt.name} = {expr_result};")
-            elif _expr_produces_string(stmt.expr, var_types):
+            elif expr_produces_string(stmt.expr, var_types):
                 var_types[stmt.name] = "rt_str"
                 lines.append(f"    rt_str {stmt.name} = {expr_result};")
             elif _needs_hpf(stmt.expr):
@@ -372,7 +333,7 @@ def _emit_stmt(
             lines.append(f"    rt_print_str({expr_result});")
         elif isinstance(stmt.expr, Var) and var_types.get(stmt.expr.name) == "rt_str":
             lines.append(f"    rt_print_str({expr_result});")
-        elif _expr_produces_string(stmt.expr, var_types):
+        elif expr_produces_string(stmt.expr, var_types):
             lines.append(f"    rt_print_str({expr_result});")
         elif isinstance(stmt.expr, Var) and var_types.get(stmt.expr.name) == "rt_int":
             lines.append(f"    rt_print_int({expr_result});")
@@ -471,7 +432,7 @@ def _emit_stmt(
 def _emit_function(
     func: FunctionDef,
     lines: List[str],
-    state: _CodegenState,
+    state: CodegenState,
     fn_sigs: Dict[str, int]
 ) -> None:
     """Emit code for a function definition."""
@@ -494,7 +455,7 @@ def _emit_function(
     lines.append("}")
 
 
-def _emit_class(cls: ClassDef, lines: List[str], state: _CodegenState) -> None:
+def _emit_class(cls: ClassDef, lines: List[str], state: CodegenState) -> None:
     """Emit code for a class definition."""
     # Emit class struct and methods
     lines.append(f"// Class: {cls.name}")
@@ -504,7 +465,7 @@ def _emit_class(cls: ClassDef, lines: List[str], state: _CodegenState) -> None:
 def generate(module_ir: ModuleIR) -> CSource:
     """Generate C source code from intermediate representation using fast native integers."""
     lines: List[str] = []
-    state = _CodegenState()
+    state = CodegenState()
     
     # Collect function signatures
     fn_sigs: Dict[str, int] = {}

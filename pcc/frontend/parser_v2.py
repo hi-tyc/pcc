@@ -755,9 +755,6 @@ class ParserV2:
         
         raise ParseError(f"Unexpected token: {token}", token.lineno, token.col_offset)
     
-    # Builtin functions that don't need to be defined
-    _BUILTINS = {'len', 'abs', 'min', 'max', 'pow', 'str', 'int'}
-    
     def _parse_call(self, name: str, defined: Set[str]) -> Expr:
         """Parse function call, constructor call, or builtin call."""
         self._expect(TokenType.LPAR)
@@ -772,8 +769,9 @@ class ParserV2:
         
         self._expect(TokenType.RPAR)
         
-        # Check if it's a builtin function
-        if name in self._BUILTINS:
+        from ..utils import is_builtin
+        
+        if is_builtin(name):
             return self._parse_builtin(name, args)
         
         # Check if it's a constructor call
@@ -792,28 +790,12 @@ class ParserV2:
     
     def _parse_builtin(self, name: str, args: List[Expr]) -> BuiltinCall:
         """Parse builtin function call with argument validation."""
-        # Validate argument counts for builtins
-        builtin_arity = {
-            'len': 1,
-            'abs': 1,
-            'str': 1,
-            'int': 1,
-            'pow': (2, 3),  # 2 or 3 args
-            'min': (1, None),  # 1 or more
-            'max': (1, None),  # 1 or more
-        }
+        from ..utils import validate_builtin_args
         
-        arity = builtin_arity.get(name)
-        if arity is not None:
-            if isinstance(arity, int):
-                if len(args) != arity:
-                    raise ParseError(f"Builtin '{name}' expects {arity} argument(s), got {len(args)}")
-            elif isinstance(arity, tuple):
-                min_args, max_args = arity
-                if len(args) < min_args:
-                    raise ParseError(f"Builtin '{name}' expects at least {min_args} argument(s), got {len(args)}")
-                if max_args is not None and len(args) > max_args:
-                    raise ParseError(f"Builtin '{name}' expects at most {max_args} argument(s), got {len(args)}")
+        try:
+            validate_builtin_args(name, len(args))
+        except ValueError as e:
+            raise ParseError(str(e))
         
         return BuiltinCall(name=name, args=args)
     
