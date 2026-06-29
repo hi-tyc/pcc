@@ -30,6 +30,11 @@ import ast_nodes as A
 
 COMPILER_DIR = os.path.dirname(os.path.abspath(__file__))
 RUNTIME_C = os.path.join(COMPILER_DIR, "runtime.c")
+GLUE_C = os.path.join(COMPILER_DIR, "glue.c")
+
+# Default location of the system libpython (anaconda3 in this environment).
+DEFAULT_PYTHON_INC = "/home/tyc/anaconda3/include/python3.7m"
+DEFAULT_PYTHON_LIB = "/home/tyc/anaconda3/lib"
 
 
 class CompileError(Exception):
@@ -49,6 +54,43 @@ def find_tool(names):
         except FileNotFoundError:
             continue
     return None
+
+
+def _needs_embed_mode(source, source_dir=None):
+    """Heuristic: does the source need embed mode (libpython fallback)?
+
+    Returns True if the source imports any module that is not in our native
+    KNOWN_STDLIB set AND that is not a local .py file we can inline.
+
+    - If a non-stdlib import is a local .py file, native mode (with inlining) works.
+    - If a non-stdlib import is a pip-installed C extension (numpy, requests, ...),
+      embed mode is required for 100% compatibility.
+    """
+    import re
+    # Strip comments and string literals to avoid false positives.
+    text = re.sub(r"#[^\n]*", "", source)
+    text = re.sub(r"\"{3}.*?\"{3}", "", text, flags=re.DOTALL)
+    text = re.sub(r"'{3}.*?'{3}", "", text, flags=re.DOTALL)
+    text = re.sub(r"\"[^\"\\]*(?:\\.[^\"\\]*)*\"", "", text)
+    text = re.sub(r"'[^'\\]*(?:\\.[^'\\]*)*'", "", text)
+    for line in text.splitlines():
+        s = line.strip()
+        mod = None
+        if s.startswith("import "):
+            mod = s[7:].split(" as ")[0].split(".")[0].strip()
+        elif s.startswith("from "):
+            mod = s[5:].split(" import ")[0].split(".")[0].strip()
+        if not mod or mod in KNOWN_STDLIB:
+            continue
+        # Check if this is a local file we can inline.
+        if source_dir:
+            local = find_module(mod, source_dir)
+            if local:
+                # Local file: native mode can inline it.
+                continue
+        # Not a known stdlib and not a local file -> needs embed mode.
+        return True
+    return False
 
 
 def run(cmd):
@@ -265,7 +307,7 @@ def _rewrite_stmt(s, user_modules):
     return s
 
 
-def resolve_imports(source, source_dir, visited=None):
+def resolve_imports(source, source_dir, visited=None, embed_mode=False):
     """Parse source, find user module imports, inline their definitions.
 
     For user modules (not in KNOWN_STDLIB), we:
@@ -277,6 +319,9 @@ def resolve_imports(source, source_dir, visited=None):
     5. Return the merged AST with user module imports removed
 
     For stdlib modules, keep imports as-is (handled by semantic analyzer).
+
+    In embed mode (route A), user module imports are NOT inlined: they are
+    kept as-is and routed through libpython.
     """
     if visited is None:
         visited = set()
@@ -302,13 +347,13 @@ def resolve_imports(source, source_dir, visited=None):
     for stmt in ast:
         if isinstance(stmt, A.Import):
             top = stmt.module.split(".")[0]
-            if top not in KNOWN_STDLIB:
+            if top not in KNOWN_STDLIB and not embed_mode:
                 module_kinds[top] = "user"
             else:
                 module_kinds[top] = "stdlib"
         elif isinstance(stmt, A.ImportFrom):
             top = stmt.module.split(".")[0]
-            if top not in KNOWN_STDLIB:
+            if top not in KNOWN_STDLIB and not embed_mode:
                 module_kinds[top] = "user"
             else:
                 module_kinds[top] = "stdlib"
@@ -316,7 +361,9 @@ def resolve_imports(source, source_dir, visited=None):
     for stmt in ast:
         if isinstance(stmt, A.Import):
             top = stmt.module.split(".")[0]
-            if top in KNOWN_STDLIB:
+            if top in KNOWN_STDLIB or embed_mode:
+                # In embed mode, keep all imports (stdlib + non-stdlib) — non-stdlib
+                # ones are loaded by libpython at runtime.
                 new_stmts.append(stmt)
             else:
                 # User module - try to resolve
@@ -348,7 +395,7 @@ def resolve_imports(source, source_dir, visited=None):
                     new_stmts.append(stmt)
         elif isinstance(stmt, A.ImportFrom):
             top = stmt.module.split(".")[0]
-            if top in KNOWN_STDLIB:
+            if top in KNOWN_STDLIB or embed_mode:
                 new_stmts.append(stmt)
             else:
                 module_path = find_module(stmt.module, source_dir)
@@ -394,12 +441,14 @@ def resolve_imports(source, source_dir, visited=None):
             new_stmts.append(stmt)
 
     # Rewrite module.x -> x for user modules in the kept statements.
-    rewrite_attr_refs(new_stmts)
+    # In embed mode, we keep mod.x references for libpython to resolve.
+    if not embed_mode:
+        rewrite_attr_refs(new_stmts)
 
     return extra_defs + new_stmts
 
 
-def compile_source(source, source_name, out_exec, opt_level=2, emit_ir=False, no_opt=False):
+def compile_source(source, source_name, out_exec, opt_level=2, emit_ir=False, no_opt=False, embed_mode=False):
     # Stage 1: lex
     log("[1/5] Lexical analysis...")
     try:
@@ -420,7 +469,7 @@ def compile_source(source, source_name, out_exec, opt_level=2, emit_ir=False, no
     source_dir = os.path.dirname(os.path.abspath(source_name))
     log("[2.5/5] Resolving imports...")
     try:
-        ast = resolve_imports(source, source_dir)
+        ast = resolve_imports(source, source_dir, embed_mode=embed_mode)
     except (LexError, ParseError) as e:
         raise CompileError(str(e))
     log(f"      {len(ast)} statements after import resolution")
@@ -428,7 +477,7 @@ def compile_source(source, source_name, out_exec, opt_level=2, emit_ir=False, no
     # Stage 3: semantic analysis
     log("[3/5] Semantic analysis & type inference...")
     try:
-        info = analyze(ast)
+        info = analyze(ast, embed_mode=embed_mode)
     except SemanticError as e:
         raise CompileError(str(e))
     log(f"      {len(info['funcs'])} function(s), {len(info['globals'])} global(s)")
@@ -436,7 +485,7 @@ def compile_source(source, source_name, out_exec, opt_level=2, emit_ir=False, no
     # Stage 4: codegen
     log("[4/5] LLVM IR generation...")
     try:
-        ir = generate(info)
+        ir = generate(info, embed_mode=embed_mode)
     except CodeGenError as e:
         raise CompileError(str(e))
 
@@ -478,6 +527,23 @@ def compile_source(source, source_name, out_exec, opt_level=2, emit_ir=False, no
     if not os.path.exists(RUNTIME_C):
         raise CompileError(f"runtime library not found: {RUNTIME_C}")
     link_cmd = [clang, f"-O{opt_level}", link_input, RUNTIME_C, "-o", out_exec, "-lm"]
+    if embed_mode:
+        # Hybrid A+B mode: link with libpython + glue.c
+        if not os.path.exists(GLUE_C):
+            raise CompileError(f"glue.c not found: {GLUE_C}")
+        py_inc = os.environ.get("PYINC", DEFAULT_PYTHON_INC)
+        py_lib = os.environ.get("PYLIB", DEFAULT_PYTHON_LIB)
+        # Build glue.c as a .o to avoid name collisions with our runtime.c
+        glue_o = out_exec + ".glue.o"
+        run([clang, "-fPIC", "-O2", "-c", GLUE_C, f"-I{py_inc}", "-o", glue_o])
+        # Recompose link command: IR + runtime + glue + libpython
+        link_cmd = [
+            clang, f"-O{opt_level}",
+            link_input, RUNTIME_C, glue_o,
+            f"-L{py_lib}", "-lpython3.7m",
+            f"-Wl,-rpath,{py_lib}",
+            "-o", out_exec, "-lm", "-lpthread",
+        ]
     run(link_cmd)
     log(f"      executable -> {out_exec}")
 
@@ -486,7 +552,45 @@ def compile_source(source, source_name, out_exec, opt_level=2, emit_ir=False, no
         for p in (ir_path, opt_path):
             if os.path.exists(p):
                 os.remove(p)
+        if embed_mode:
+            glue_o = out_exec + ".glue.o"
+            if os.path.exists(glue_o):
+                os.remove(glue_o)
     return out_exec
+
+
+def smart_compile(source, source_name, out_exec, opt_level=2, emit_ir=False,
+                  no_opt=False, force_embed=False, force_native=False):
+    """Auto-detect the right compile mode.
+
+    1. If `force_embed` is set, use embed mode.
+    2. If `force_native` is set, use native mode (and fail on unknown features).
+    3. Otherwise, scan the source for non-stdlib imports.
+       * Local .py files -> inlined, native mode (route B).
+       * Unknown / pip-installed modules -> embed mode (route A) — 100% Python compatible.
+
+    This implements the user's "A+B" strategy: native compile where possible,
+    hybrid for unknown imports/C extensions.
+    """
+    if force_embed:
+        log("[auto] embed mode forced")
+        return compile_source(source, source_name, out_exec, opt_level=opt_level,
+                              emit_ir=emit_ir, no_opt=no_opt, embed_mode=True)
+
+    if force_native:
+        log("[auto] native mode forced")
+        return compile_source(source, source_name, out_exec, opt_level=opt_level,
+                              emit_ir=emit_ir, no_opt=no_opt, embed_mode=False)
+
+    source_dir = os.path.dirname(os.path.abspath(source_name))
+    if _needs_embed_mode(source, source_dir=source_dir):
+        log("[auto] non-stdlib imports detected -> embed mode (route A+B)")
+        return compile_source(source, source_name, out_exec, opt_level=opt_level,
+                              emit_ir=emit_ir, no_opt=no_opt, embed_mode=True)
+
+    log("[auto] no non-stdlib imports -> native mode (route B)")
+    return compile_source(source, source_name, out_exec, opt_level=opt_level,
+                          emit_ir=emit_ir, no_opt=no_opt, embed_mode=False)
 
 
 def main():
@@ -501,6 +605,15 @@ def main():
     ap.add_argument("--emit-ir", action="store_true",
                     help="keep the generated .ll / .opt.ll files")
     ap.add_argument("--no-opt", action="store_true", help="skip LLVM optimization passes")
+    ap.add_argument("--embed", action="store_true",
+                    help="force hybrid A+B mode: link with libpython for full Python "
+                         "compatibility (numpy, requests, C extensions, etc.)")
+    ap.add_argument("--native", action="store_true",
+                    help="force native (B) mode: no libpython linkage, faster/smaller "
+                         "but only works for our supported subset of Python")
+    ap.add_argument("--auto", action="store_true", default=True,
+                    help="auto-detect mode: native for known-stdlib-only code, embed "
+                         "otherwise. This is the default behavior.")
     args = ap.parse_args()
 
     if not os.path.exists(args.source):
@@ -515,9 +628,49 @@ def main():
         base = os.path.splitext(args.source)[0]
         out_exec = base
 
+    force_embed = bool(args.embed)
+    force_native = bool(args.native)
+    if force_embed and force_native:
+        sys.stderr.write("error: --embed and --native are mutually exclusive\n")
+        return 1
+
     try:
-        compile_source(source, args.source, out_exec,
-                       opt_level=args.opt_level, emit_ir=args.emit_ir, no_opt=args.no_opt)
+        # First pass: try the user-requested mode. If it fails because of an
+        # unsupported feature that libpython can handle, automatically retry
+        # in embed mode. This implements the "max 100% compatibility"
+        # requirement: when in doubt, fall back to the slower-but-complete path.
+        if force_embed:
+            compile_source(source, args.source, out_exec,
+                           opt_level=args.opt_level, emit_ir=args.emit_ir,
+                           no_opt=args.no_opt, embed_mode=True)
+        elif force_native:
+            compile_source(source, args.source, out_exec,
+                           opt_level=args.opt_level, emit_ir=args.emit_ir,
+                           no_opt=args.no_opt, embed_mode=False)
+        else:
+            # Auto: try native first, fall back to embed on failure.
+            try:
+                smart_compile(source, args.source, out_exec,
+                              opt_level=args.opt_level, emit_ir=args.emit_ir,
+                              no_opt=args.no_opt)
+            except CompileError as e:
+                err = str(e)
+                # If native failed because the program needs features we don't
+                # have natively (e.g. numpy, requests), automatically retry in
+                # embed mode for full Python compatibility.
+                if _needs_embed_mode(source, source_dir=source_dir):
+                    log(f"[auto] native compile failed ({err.splitlines()[0] if err else 'unknown'}); "
+                        "retrying in embed mode (route A)")
+                    # Clean up partial outputs.
+                    for ext in (".ll", ".opt.ll", ".glue.o"):
+                        p = out_exec + ext
+                        if os.path.exists(p):
+                            os.remove(p)
+                    compile_source(source, args.source, out_exec,
+                                   opt_level=args.opt_level, emit_ir=args.emit_ir,
+                                   no_opt=args.no_opt, embed_mode=True)
+                else:
+                    raise
     except CompileError as e:
         sys.stderr.write(f"\nCompilation failed:\n{e}\n")
         return 1

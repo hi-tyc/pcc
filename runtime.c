@@ -195,6 +195,10 @@ void py_list_set_kind(PyList *l, int kind) {
     l->elem_kind = kind;
 }
 
+int py_list_get_kind(PyList *l) {
+    return l ? l->elem_kind : 0;
+}
+
 static void py_list_grow(PyList *l, long needed) {
     if (needed <= l->capacity) return;
     long newcap = l->capacity;
@@ -225,6 +229,8 @@ void py_list_append_list(PyList *l, PyList *v) {
     py_list_grow(l, l->length + 1);
     ((PyList **)l->data)[l->length] = v;
     l->length++;
+    /* Promote to list kind if needed. */
+    if (l->elem_kind == LE_INT) l->elem_kind = LE_LIST;
 }
 
 long py_list_get_int(PyList *l, long i) {

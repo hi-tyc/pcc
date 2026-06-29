@@ -26,6 +26,7 @@ class SemanticError(Exception):
 # Type constants
 INT, FLOAT, STR, BOOL, NONE, VOID = "int", "float", "str", "bool", "none", "void"
 SET = "set"
+PYOBJECT = "pyobject"  # Hybrid A+B mode: handled by libpython fallback
 
 EXCEPTION_TYPES = {
     "Exception", "ValueError", "TypeError", "KeyError",
@@ -66,6 +67,7 @@ BUILTINS = {
     "set": None,
     "dict": None,
     "tuple": None,
+    "list": None,         # convert iterable to list
     "deque": None,        # from collections; returns ("obj", "deque")
     "Counter": None,      # from collections; returns ("obj", "Counter")
     "hex": STR,
@@ -195,8 +197,9 @@ class FuncInfo:
 
 
 class Analyzer:
-    def __init__(self, program):
+    def __init__(self, program, embed_mode=False):
         self.program = program
+        self.embed_mode = embed_mode
         self.funcs = {}
         self.top_stmts = []
         self.changed = False
@@ -695,18 +698,42 @@ class Analyzer:
 
     def _handle_import(self, s, scope, is_global_scope):
         """Register imported names in scope so they resolve to module types."""
+        # Stdlib module names (those the compiler knows natively).
+        KNOWN_STDLIB = {
+            "random", "time", "re", "threading", "queue", "collections",
+            "concurrent", "concurrent.futures", "math", "os", "sys", "json",
+            "itertools", "functools", "string", "datetime", "struct",
+            "io", "pathlib", "copy", "textwrap", "bisect", "heapq",
+            "operator", "enum", "abc", "contextlib", "csv", "base64",
+            "pprint", "unicodedata", "codecs", "hashlib", "hmac",
+            "secrets", "decimal", "fractions", "statistics", "array",
+            "weakref", "dataclasses", "typing", "argparse", "configparser",
+            "shutil", "tempfile", "glob", "fnmatch", "subprocess", "signal",
+            "mmap", "ctypes", "platform", "errno", "stat", "socket",
+            "ssl", "http", "urllib", "email", "xml", "html",
+            "logging", "warnings", "traceback", "inspect", "types",
+        }
         if isinstance(s, A.Import):
             name = s.alias if s.alias else s.module
-            # Use just the top-level module name for the type.
             top = s.module.split(".")[0]
-            self._define(name, ("module", top), scope, s.line, is_global_scope)
+            # In embed mode, non-stdlib modules are PyObject* (route A).
+            if self.embed_mode and top not in KNOWN_STDLIB:
+                self._define(name, PYOBJECT, scope, s.line, is_global_scope)
+            else:
+                # Use just the top-level module name for the type.
+                self._define(name, ("module", top), scope, s.line, is_global_scope)
         elif isinstance(s, A.ImportFrom):
-            for n in s.names:
-                # Known runtime callables get ("module", module + "." + name); others NONE.
-                known_runtime = {"deque", "Counter", "ThreadPoolExecutor", "as_completed"}
-                if n in known_runtime:
-                    self._define(n, ("module", s.module + "." + n), scope, s.line, is_global_scope)
-                else:
+            top = s.module.split(".")[0]
+            # In embed mode, names from `from X import Y` are individual
+            # Python objects (functions, classes, constants). Register them
+            # as PYOBJECT so attribute access and calls route through
+            # libpython — this works for stdlib too because the value is
+            # already a fully-resolved Python object after the import.
+            if self.embed_mode:
+                for n in s.names:
+                    self._define(n, PYOBJECT, scope, s.line, is_global_scope)
+            else:
+                for n in s.names:
                     self._define(n, ("module", s.module + "." + n), scope, s.line, is_global_scope)
 
     @staticmethod
@@ -771,6 +798,15 @@ class Analyzer:
                     return  # keep the more specific type
             # Allow refining NONE (the "none" type) to a more concrete type.
             if prev == NONE and t != NONE:
+                target[name] = t
+                self.changed = True
+                return
+            # Allow promoting a native int/float/bool to PYOBJECT when a
+            # program mixes native code with C-extension calls (e.g.
+            # `total = 0; total = sqrt(total + 1)` in a numpy-using program).
+            # Python variables are dynamically typed; in our hybrid mode this
+            # is a legal re-typing.
+            if t == PYOBJECT and prev in (INT, FLOAT, BOOL):
                 target[name] = t
                 self.changed = True
                 return
@@ -874,9 +910,15 @@ class Analyzer:
         if isinstance(e, A.BinOp):
             lt = self._expr(e.left, scope, strict)
             rt = self._expr(e.right, scope, strict)
+            # Hybrid mode: any pyobject operand → pyobject result.
+            if lt == PYOBJECT or rt == PYOBJECT:
+                return PYOBJECT
             return self._binop_type(e.op, lt, rt, e.line)
         if isinstance(e, A.UnaryOp):
             ot = self._expr(e.operand, scope, strict)
+            # Hybrid mode: pyobject operand → pyobject (except for `not` which is bool).
+            if ot == PYOBJECT:
+                return BOOL if e.op == "not" else PYOBJECT
             if e.op == "not":
                 return BOOL
             if e.op in ("+", "-"):
@@ -931,7 +973,25 @@ class Analyzer:
             if e.args:
                 return self._expr(e.args[0], scope, strict)
             return NONE
+        # Type conversion builtins are exact — they always return their target
+        # type even if the argument is a pyobject. This lets users write
+        # `int(numpy_value)` to convert a hybrid value into a native int.
+        if isinstance(e, A.Call) and isinstance(e.func, A.Name) \
+                and e.func.name in ("int", "float", "str", "bool"):
+            return self._builtin_type(e.func.name, e, [], strict)
         if isinstance(e, A.Call):
+            # For direct calls to a Name (user function or built-in), always
+            # go through _call_type so we can refine param types and return
+            # type via fixpoint iteration. This is critical in hybrid mode:
+            # a function that takes a numpy array and returns a numpy array
+            # needs to be typed correctly so calls to it from the top level
+            # propagate the PYOBJECT type.
+            if isinstance(e.func, A.Name) and e.func.name in self.funcs:
+                return self._call_type(e, scope, strict)
+            # Hybrid mode: if any arg or func is pyobject, return pyobject.
+            ft = self._expr(e.func, scope, strict=False)
+            if ft == PYOBJECT or any(self._expr(a, scope, strict=False) == PYOBJECT for a in e.args):
+                return PYOBJECT
             return self._call_type(e, scope, strict)
         if isinstance(e, A.ListLit):
             elem_types = [self._expr(el, scope, strict) for el in e.elements]
@@ -971,6 +1031,9 @@ class Analyzer:
         if isinstance(e, A.Subscript):
             ot = self._expr(e.obj, scope, strict)
             it = self._expr(e.index, scope, strict)
+            # Hybrid mode: pyobject subscript returns pyobject.
+            if ot == PYOBJECT or it == PYOBJECT:
+                return PYOBJECT
             if ot is None:
                 return None
             if isinstance(ot, tuple) and ot[0] == "list":
@@ -1017,8 +1080,16 @@ class Analyzer:
                 raise SemanticError(f"cannot slice value of type {ot}", e.line)
             return None
         if isinstance(e, A.Attribute):
+            # Hybrid mode: if obj is pyobject, attribute access returns pyobject.
+            ot = self._expr(e.obj, scope, strict=False)
+            if ot == PYOBJECT:
+                return PYOBJECT
             return self._attr_type(e, scope, strict)
         if isinstance(e, A.MethodCall):
+            # Hybrid mode: if obj is pyobject, method call returns pyobject.
+            ot = self._expr(e.obj, scope, strict=False)
+            if ot == PYOBJECT:
+                return PYOBJECT
             return self._method_call_type(e, scope, strict)
         if isinstance(e, A.FString):
             # Evaluate all expression parts for side effects; result is always STR.
@@ -1793,6 +1864,20 @@ class Analyzer:
             if arg_types and isinstance(arg_types[0], tuple) and arg_types[0][0] == "tuple":
                 return arg_types[0]
             return ("tuple", [])
+        if name == "list":
+            # list(iterable) -> list of iterable's element type. We use NONE
+            # for the element type to let the runtime determine it from the
+            # actual values (which is what happens when we convert a pyobject
+            # such as a numpy array to a native list).
+            if arg_types and isinstance(arg_types[0], tuple) and arg_types[0][0] == "list":
+                return arg_types[0]
+            if arg_types and isinstance(arg_types[0], tuple) and arg_types[0][0] == "tuple":
+                return ("list", arg_types[0][1][0] if arg_types[0][1] else NONE)
+            if arg_types and isinstance(arg_types[0], tuple) and arg_types[0][0] == "set":
+                return ("list", arg_types[0][1])
+            if arg_types and arg_types[0] == STR:
+                return ("list", STR)
+            return ("list", NONE)
         if name in ("deque", "Counter"):
             return ("obj", name)
         if name == "__lambda__":
@@ -1832,5 +1917,5 @@ class Analyzer:
         return None
 
 
-def analyze(program):
-    return Analyzer(program).analyze()
+def analyze(program, embed_mode=False):
+    return Analyzer(program, embed_mode=embed_mode).analyze()

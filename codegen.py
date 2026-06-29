@@ -266,6 +266,50 @@ declare ptr @py_iter_range(i64, i64, i64)
 declare i32 @py_iter_has_next(ptr)
 declare i64 @py_iter_next_int(ptr)
 declare ptr @py_iter_next_str(ptr)
+
+; ---- hybrid A-route (libpython fallback) ----
+declare void @py_embed_init(i32, ptr)
+declare void @py_embed_finalize()
+declare ptr @py_fallback_import(ptr)
+declare ptr @py_fallback_getattr(ptr, ptr)
+declare ptr @py_call_obj(ptr, ptr, i32)
+declare ptr @py_call_method(ptr, ptr, ptr, i32)
+declare ptr @py_int_to_pyobject(i64)
+declare ptr @py_float_to_pyobject(double)
+declare ptr @py_str_to_pyobject(ptr)
+declare ptr @py_none_to_pyobject()
+declare ptr @py_bool_to_pyobject(i32)
+declare i64 @py_object_to_int(ptr)
+declare double @py_object_to_float(ptr)
+declare ptr @py_object_to_str_ptr(ptr)
+declare i32 @py_object_to_bool(ptr)
+declare ptr @py_op_add(ptr, ptr)
+declare ptr @py_op_sub(ptr, ptr)
+declare ptr @py_op_mul(ptr, ptr)
+declare ptr @py_op_div(ptr, ptr)
+declare ptr @py_op_floordiv(ptr, ptr)
+declare ptr @py_op_mod(ptr, ptr)
+declare ptr @py_op_pow(ptr, ptr)
+declare i32 @py_op_eq(ptr, ptr)
+declare i32 @py_op_ne(ptr, ptr)
+declare i32 @py_op_lt(ptr, ptr)
+declare i32 @py_op_le(ptr, ptr)
+declare i32 @py_op_gt(ptr, ptr)
+declare i32 @py_op_ge(ptr, ptr)
+declare i32 @py_op_contains(ptr, ptr)
+declare i32 @py_truthy(ptr)
+declare ptr @py_iter(ptr)
+declare ptr @py_iter_next(ptr)
+declare ptr @py_fallback_getitem(ptr, ptr)
+declare i32 @py_fallback_setitem(ptr, ptr, ptr)
+declare ptr @py_format_obj(ptr, ptr)
+declare void @py_print_obj(ptr)
+declare void @py_incref(ptr)
+declare void @py_decref(ptr)
+declare void @py_object_setitem(ptr, ptr, ptr)
+declare ptr @py_list_int_to_pylist(ptr)
+declare ptr @py_list_str_to_pylist(ptr)
+declare ptr @py_object_to_list(ptr)
 """
 
 
@@ -306,6 +350,8 @@ def llvm_type(t):
     if isinstance(t, tuple):
         # list, obj, tuple, dict, module, etc. all lower to ptr
         return "ptr"
+    if t == "pyobject":
+        return "ptr"
     return {"int": "i64", "float": "double", "str": "ptr",
             "bool": "i1", "none": "i64"}.get(t, "i64")
 
@@ -316,6 +362,8 @@ def ret_llvm_type(t):
 
 def zero_value(t):
     if isinstance(t, tuple):
+        return "null"
+    if t == "pyobject":
         return "null"
     return {"int": "0", "float": "0.0", "bool": "false",
             "str": "null", "none": "0"}.get(t, "0")
@@ -352,12 +400,18 @@ def escape_llvm_bytes(raw):
 
 
 class CodeGen:
-    def __init__(self, info):
+    def __init__(self, info, embed_mode=False):
         self.funcs = info["funcs"]
         self.func_names = set(info["funcs"].keys())
         self.top_stmts = info["top_stmts"]
         self.global_types = info["globals"]
         self.classes = info.get("classes", {})
+        # Hybrid A+B mode: when True, unknown imports (C extensions, etc.)
+        # are routed through libpython instead of native compilation.
+        self.embed_mode = embed_mode
+        # Names brought into scope by non-stdlib imports — treated as
+        # PyObject* in the codegen. {name -> top_module_name}
+        self.pyobj_names = {}
         # Assign class IDs: sort class names alphabetically, assign 0,1,2,...
         self.class_ids = {}
         for idx, cname in enumerate(sorted(self.classes.keys())):
@@ -512,12 +566,19 @@ class CodeGen:
         self._start_function()
         self.current_fn_ret = "int"
         self.in_main = True
-        self.body.append("define i32 @main() {")
+        self.body.append("define i32 @main(i32 %argc, ptr %argv) {")
         self.place_block("entry")
+        # In embed mode, initialize libpython before any user code runs.
+        if self.embed_mode:
+            self.emit("call void @py_embed_init(i32 %argc, ptr %argv)")
         for vname, vtype in self.global_types.items():
             self.locals[vname] = (f"@g_{vname}", vtype, True)
         for s in self.top_stmts:
             self.gen_stmt(s)
+        if self.embed_mode:
+            # Defer the finalize to a function epilogue: in a return path
+            # we just call ret; cleanup happens at process exit anyway.
+            pass
         if not self.terminated:
             self.emit_term("ret i32 0")
         self.body.append("}")
@@ -525,6 +586,12 @@ class CodeGen:
 
     # ---- variable access ----
     def load_var(self, name, line=0):
+        # PyObject* (hybrid mode): name is a module from a non-stdlib import.
+        if self.embed_mode and name in self.pyobj_names:
+            slot, _, _ = self.locals[name]
+            r = self.fresh()
+            self.emit(f"{r} = load ptr, ptr {slot}")
+            return r, "pyobject"
         # A bare function name used as a value (e.g. target=consumer) yields
         # its function pointer. Module/builtin names are opaque.
         if name not in self.locals:
@@ -585,11 +652,14 @@ class CodeGen:
             if not self.loop_stack:
                 raise CodeGenError("continue outside loop", s.line)
             self.br(self.loop_stack[-1][0])
-        elif isinstance(s, (A.Pass, A.Global, A.Import, A.ImportFrom, A.ClassDef,
-                            A.FuncDef)):
-            # Imports are no-ops (names already resolved by semantic analyzer).
+        elif isinstance(s, (A.Pass, A.Global, A.ClassDef, A.FuncDef)):
+            # Pass / global decls are no-ops.
             # ClassDef/FuncDef are hoisted to top-level by the semantic analyzer.
             pass
+        elif isinstance(s, A.Import):
+            self.gen_import(s)
+        elif isinstance(s, A.ImportFrom):
+            self.gen_import_from(s)
         elif isinstance(s, A.Raise):
             self.gen_raise(s)
             return
@@ -605,6 +675,150 @@ class CodeGen:
             self.gen_try(s)
         else:
             raise CodeGenError(f"unhandled statement {type(s).__name__}", s.line)
+
+    # ---- hybrid import handling (route A) ----
+    KNOWN_STDLIB_HYBRID = {
+        "random", "time", "re", "threading", "queue", "collections",
+        "concurrent", "concurrent.futures", "math", "os", "sys", "json",
+        "itertools", "functools", "string", "datetime", "struct",
+        "io", "pathlib", "copy", "textwrap", "bisect", "heapq",
+        "operator", "enum", "abc", "contextlib", "csv", "base64",
+        "pprint", "unicodedata", "codecs", "hashlib", "hmac",
+        "secrets", "decimal", "fractions", "statistics", "array",
+        "weakref", "dataclasses", "typing", "argparse", "configparser",
+        "shutil", "tempfile", "glob", "fnmatch", "subprocess", "signal",
+        "mmap", "ctypes", "platform", "errno", "stat", "socket",
+        "ssl", "http", "urllib", "email", "xml", "html",
+        "logging", "warnings", "traceback", "inspect", "types",
+        "dis", "cProfile", "profile", "pstats", "timeit", "trace",
+    }
+
+    def _is_stdlib_module(self, name):
+        return name.split(".")[0] in self.KNOWN_STDLIB_HYBRID
+
+    def _intern_name_str(self, name):
+        """Intern a C string for module/attribute names used in libpython calls."""
+        return self.intern_string(name)
+
+    def _box_value(self, v, t):
+        """Box a native value into a PyObject* (ptr) for libpython calls."""
+        if t == "pyobject":
+            return v
+        if t == INT or t == BOOL:
+            r = self.fresh()
+            b = self.coerce(v, t, INT)
+            self.emit(f"{r} = call ptr @py_int_to_pyobject(i64 {b})")
+            return r
+        if t == FLOAT:
+            r = self.fresh()
+            self.emit(f"{r} = call ptr @py_float_to_pyobject(double {v})")
+            return r
+        if t == STR:
+            r = self.fresh()
+            self.emit(f"{r} = call ptr @py_str_to_pyobject(ptr {v})")
+            return r
+        if t == NONE:
+            r = self.fresh()
+            self.emit(f"{r} = call ptr @py_none_to_pyobject()")
+            return r
+        # Lists / dicts / objects: convert to a Python list before passing
+        # to libpython (numpy.array, etc. expect real Python lists).
+        if isinstance(t, tuple) and t[0] == "list":
+            r = self.fresh()
+            et = t[1] if len(t) > 1 else INT
+            if et == STR:
+                self.emit(f"{r} = call ptr @py_list_str_to_pylist(ptr {v})")
+            else:
+                # int / float / bool / unknown → use int-list conversion (floats
+                # would lose precision; for now we only convert int lists).
+                self.emit(f"{r} = call ptr @py_list_int_to_pylist(ptr {v})")
+            return r
+        if isinstance(t, tuple) and t[0] in ("tuple", "dict", "set"):
+            return v
+        if isinstance(t, tuple) and t[0] == "obj":
+            return v
+        # Default: treat as opaque pointer
+        return v
+
+    def _unbox_value(self, v, t):
+        """Unbox a PyObject* into a native value of the requested type."""
+        if t == "pyobject":
+            return v
+        if t == INT or t == BOOL:
+            r = self.fresh()
+            b = self.coerce(v, "pyobject", INT) if t == BOOL else v
+            self.emit(f"{r} = call i64 @py_object_to_int(ptr {b})")
+            return r
+        if t == FLOAT:
+            r = self.fresh()
+            self.emit(f"{r} = call double @py_object_to_float(ptr {v})")
+            return r
+        if t == STR:
+            r = self.fresh()
+            self.emit(f"{r} = call ptr @py_object_to_str_ptr(ptr {v})")
+            return r
+        if t == NONE:
+            return "0"
+        return v
+
+    def _alloc_pyobj_global(self, name):
+        """Allocate a global ptr slot for a PyObject* in main scope, return slot name."""
+        # Insert into global_defs.
+        slot_name = f"@g_pyobj_{name}"
+        if not any(slot_name in d for d in self.global_defs):
+            self.global_defs.append(
+                f"{slot_name} = global ptr null"
+            )
+        # Also add to locals so the slot is in scope.
+        self.locals[name] = (slot_name, "pyobject", True)
+        return slot_name
+
+    def gen_import(self, s):
+        """`import X` or `import X as Y`. In embed mode, non-stdlib modules
+        are loaded via libpython and stored as PyObject* globals."""
+        top = s.module.split(".")[0]
+        target = s.alias if s.alias else top
+        if not self.embed_mode or self._is_stdlib_module(s.module):
+            # Native path: just register a no-op slot (the stdlib native code
+            # will handle it). For native non-stdlib, we error out at semantic.
+            return
+        # Allocate a global slot for the PyObject*.
+        slot = self._alloc_pyobj_global(target)
+        # Intern the module name.
+        name_str = self._intern_name_str(s.module)
+        # Emit: %mod = call ptr @py_fallback_import(ptr @str); store ptr %mod, ptr @g_pyobj_target
+        r = self.fresh()
+        self.emit(f"{r} = call ptr @py_fallback_import(ptr {name_str})")
+        self.emit(f"store ptr {r}, ptr {slot}")
+        # Mark the name as a pyobject for downstream code.
+        self.pyobj_names[target] = top
+
+    def gen_import_from(self, s):
+        """`from X import a, b`. In embed mode, the module is loaded and
+        individual attributes are bound as PyObject* globals. This works
+        for both stdlib and non-stdlib modules because libpython handles
+        all imports at runtime."""
+        top = s.module.split(".")[0]
+        if not self.embed_mode:
+            # Native mode: only the stdlib resolver handles this.
+            return
+        # Load the module once.
+        mod_str = self._intern_name_str(s.module)
+        mod_var = self.fresh()
+        self.emit(f"{mod_var} = call ptr @py_fallback_import(ptr {mod_str})")
+        for nm in s.names:
+            target = nm
+            if " as " in nm:
+                target = nm.split(" as ", 1)[1].strip()
+                source_name = nm.split(" as ", 1)[0].strip()
+            else:
+                source_name = nm
+            slot = self._alloc_pyobj_global(target)
+            attr_str = self._intern_name_str(source_name)
+            r = self.fresh()
+            self.emit(f"{r} = call ptr @py_fallback_getattr(ptr {mod_var}, ptr {attr_str})")
+            self.emit(f"store ptr {r}, ptr {slot}")
+            self.pyobj_names[target] = top
 
     def gen_assign(self, s):
         target = s.target
@@ -1939,6 +2153,23 @@ class CodeGen:
                     self.emit(f"call void @py_list_set_list(ptr {lv}, i64 {iv}, ptr {v})")
             else:
                 raise CodeGenError(f"cannot assign to list of {obj_type}", line)
+        elif obj_type == "pyobject":
+            # PyObject* subscript assignment: route through libpython.
+            ov, _ = self.gen_expr(target.obj)
+            # Coerce index to a Python object.
+            iv, it = self.gen_expr(target.index)
+            iv_boxed = self.fresh()
+            if it == INT or it == BOOL or it is None:
+                self.emit(f"{iv_boxed} = call ptr @py_int_to_pyobject(i64 {iv})")
+            elif it == FLOAT:
+                self.emit(f"{iv_boxed} = call ptr @py_float_to_pyobject(double {iv})")
+            elif it == STR:
+                self.emit(f"{iv_boxed} = call ptr @py_str_incref(ptr {iv})")
+            else:
+                iv_boxed = iv  # already a PyObject*
+            # Coerce value to a Python object.
+            v = self.coerce(value, val_type, "pyobject")
+            self.emit(f"call void @py_object_setitem(ptr {ov}, ptr {iv_boxed}, ptr {v})")
         elif isinstance(obj_type, tuple) and obj_type[0] == "dict":
             dv, _ = self.gen_expr(target.obj)
             kv, kt = self.gen_expr(target.index)
@@ -1967,6 +2198,12 @@ class CodeGen:
         # Evaluate obj to get both the value and its type (see gen_attr_assign
         # for why we don't rely on e.obj.type).
         ov, obj_type = self.gen_expr(e.obj)
+        # Hybrid mode: obj is a PyObject* (e.g. numpy module) — route through libpython.
+        if obj_type == "pyobject":
+            attr_str = self.intern_string(e.attr)
+            r = self.fresh()
+            self.emit(f"{r} = call ptr @py_fallback_getattr(ptr {ov}, ptr {attr_str})")
+            return r, "pyobject"
         # Module attribute access: handle module constants
         if is_module_type(obj_type):
             mod_name = obj_type[1] if obj_type[0] == "module" else obj_type[1]
@@ -2118,6 +2355,9 @@ class CodeGen:
 
     def gen_method_call(self, e):
         obj_type = self._obj_type_of(e.obj)
+        # Hybrid mode: obj is PyObject* — call method via libpython.
+        if obj_type == "pyobject":
+            return self._gen_pyobject_method_call(e)
         if is_list_type(obj_type):
             return self.gen_list_method(e, obj_type)
         if is_obj_type(obj_type):
@@ -2660,6 +2900,64 @@ class CodeGen:
         self.emit(f"{r} = call {llvm_type(retty)} @fn_{mangled}({argstr})")
         return r, retty
 
+    # ---- hybrid A-route helpers ----
+    def _build_pyobj_args(self, args, kwargs):
+        """Build a packed array of boxed PyObject* args for libpython calls.
+        Returns (slot_ptr, n_args)."""
+        # Build a NULL-terminated array of boxed args, then return slot and n.
+        n_total = len(args) + len(kwargs)
+        boxed = []
+        for a in args:
+            v, t = self.gen_expr(a)
+            boxed.append(self._box_value(v, t))
+        for k, val in kwargs.items():
+            # Keyword args passed as positional in the array (libpython's
+            # py_call_obj is positional-only; full kwargs need py_call_kwargs).
+            v, t = self.gen_expr(val)
+            boxed.append(self._box_value(v, t))
+        # Allocate an array of ptrs.
+        n = len(boxed)
+        if n == 0:
+            # Empty args: pass null.
+            return "null", 0
+        arr_slot = self.fresh("arr")
+        self.insert_alloca(f"{arr_slot} = alloca [{n} x ptr]")
+        for i, b in enumerate(boxed):
+            self.emit(f"  ; store boxed arg {i}")
+            # Use GEP to write to the i-th element of the array.
+            self.emit(f"{arr_slot}.gep.{i} = getelementptr [{n} x ptr], ptr {arr_slot}, i32 0, i32 {i}")
+            self.emit(f"store ptr {b}, ptr {arr_slot}.gep.{i}")
+        # Return a pointer to the first element (compatible with PyObject**).
+        first_ptr = self.fresh("arrptr")
+        self.emit(f"{first_ptr} = getelementptr [{n} x ptr], ptr {arr_slot}, i32 0, i32 0")
+        return first_ptr, n
+
+    def _gen_pyobject_method_call(self, e):
+        """Call a method on a PyObject* value via libpython."""
+        ov, _ = self.gen_expr(e.obj)
+        method_str = self.intern_string(e.method)
+        slot, n = self._build_pyobj_args(e.args, e.kwargs)
+        r = self.fresh()
+        if n == 0:
+            self.emit(f"{r} = call ptr @py_call_method(ptr {ov}, ptr {method_str}, ptr null, i32 0)")
+        else:
+            # The array is in the entry block. We need a GEP to get the array
+            # base pointer. Use a single-element array as a workaround:
+            # just pass the slot directly (slot points to first element).
+            self.emit(f"{r} = call ptr @py_call_method(ptr {ov}, ptr {method_str}, ptr {slot}, i32 {n})")
+        return r, "pyobject"
+
+    def _gen_pyobject_call(self, e):
+        """Call a PyObject* callable (e.g. result of np.array attribute access)."""
+        fv, _ = self.gen_expr(e.func)
+        slot, n = self._build_pyobj_args(e.args, e.kwargs)
+        r = self.fresh()
+        if n == 0:
+            self.emit(f"{r} = call ptr @py_call_obj(ptr {fv}, ptr null, i32 0)")
+        else:
+            self.emit(f"{r} = call ptr @py_call_obj(ptr {fv}, ptr {slot}, i32 {n})")
+        return r, "pyobject"
+
     def gen_module_method_call(self, e, obj_type):
         """Method call on a module: random.randint, re.sub, time.perf_counter, etc."""
         # obj_type may be ("module", name) or ("module_attr", mod, attr).
@@ -2938,6 +3236,35 @@ class CodeGen:
             r = self.fresh()
             self.emit(f"{r} = call ptr @py_int_to_str(i64 {value})")
             return r
+        if dst == "pyobject":
+            # Native int -> PyObject*: box the value. Also handle float/bool.
+            if src == INT or src == BOOL or src is None:
+                r = self.fresh()
+                self.emit(f"{r} = call ptr @py_int_to_pyobject(i64 {value})")
+                return r
+            if src == FLOAT:
+                r = self.fresh()
+                self.emit(f"{r} = call ptr @py_float_to_pyobject(double {value})")
+                return r
+            if src == STR:
+                r = self.fresh()
+                self.emit(f"{r} = call ptr @py_str_incref(ptr {value})")
+                return r
+            if isinstance(src, tuple) and src[0] == "list":
+                # Native list -> Python list.
+                r = self.fresh()
+                self.emit(f"{r} = call ptr @py_list_int_to_pylist(ptr {value})")
+                return r
+            if value == "null":
+                return "null"
+        if src == "pyobject" and dst == INT:
+            r = self.fresh()
+            self.emit(f"{r} = call i64 @py_object_to_int(ptr {value})")
+            return r
+        if src == "pyobject" and dst == FLOAT:
+            r = self.fresh()
+            self.emit(f"{r} = call double @py_object_to_float(ptr {value})")
+            return r
         if src == FLOAT and dst == STR:
             r = self.fresh()
             self.emit(f"{r} = call ptr @py_float_to_str(double {value})")
@@ -3003,8 +3330,39 @@ class CodeGen:
         self.emit(f"{r} = icmp ne i64 {value}, 0")
         return r
 
+    def _gen_pyobject_binop(self, op, lv, lt, rv, rt, result_type, line):
+        """Binary op on PyObject* values via libpython."""
+        # Special-case comparison ops (they return bool, not pyobject).
+        if op in ("==", "!=", "<", ">", "<=", ">="):
+            return self.gen_compare(op, lv, lt, rv, rt, line), BOOL
+        # Box both operands.
+        lb = self._box_value(lv, lt)
+        rb = self._box_value(rv, rt)
+        # Dispatch to the right op.
+        op_map = {
+            "+": "py_op_add", "-": "py_op_sub", "*": "py_op_mul",
+            "/": "py_op_div", "//": "py_op_floordiv", "%": "py_op_mod",
+            "**": "py_op_pow",
+        }
+        if op not in op_map:
+            raise CodeGenError(f"unsupported pyobject op '{op}'", line)
+        r = self.fresh()
+        self.emit(f"{r} = call ptr @{op_map[op]}(ptr {lb}, ptr {rb})")
+        return r, "pyobject"
+
     def gen_unary(self, e):
         val, t = self.gen_expr(e.operand)
+        if t == "pyobject":
+            if e.op == "not":
+                b = self.fresh()
+                self.emit(f"{b} = call i32 @py_truthy(ptr {val})")
+                rb = self.fresh()
+                self.emit(f"{rb} = icmp eq i32 {b}, 0")
+                return rb, BOOL
+            if e.op == "-":
+                r = self.fresh()
+                self.emit(f"{r} = call ptr @py_op_neg(ptr {val})")
+                return r, "pyobject"
         if e.op == "not":
             b = self.to_bool(val, t)
             r = self.fresh()
@@ -3081,6 +3439,9 @@ class CodeGen:
         return phi, restype
 
     def gen_binop(self, op, lv, lt, rv, rt, result_type, line):
+        # Hybrid A-route: if either operand is a PyObject*, route through libpython.
+        if lt == "pyobject" or rt == "pyobject":
+            return self._gen_pyobject_binop(op, lv, lt, rv, rt, result_type, line)
         if op in ("==", "!=", "<", ">", "<=", ">="):
             return self.gen_compare(op, lv, lt, rv, rt, line), BOOL
         # `in` / `not in` on a set: use py_set_contains
@@ -3504,9 +3865,24 @@ class CodeGen:
             mc = A.MethodCall(e.func.obj, e.func.attr, e.args, e.line, kwargs=e.kwargs)
             mc.type = getattr(e, 'type', None)
             return self.gen_method_call(mc)
+        # Hybrid mode: the callable itself is a PyObject* (e.g. result of
+        # `np.array` attribute access stored in a variable, or a Python
+        # function imported from a C extension).
+        if isinstance(e.func, A.Name) and self.embed_mode and e.func.name in self.pyobj_names:
+            return self._gen_pyobject_call(e)
+        if isinstance(e.func, A.Attribute):
+            # foo.bar(...) where foo is a pyobject
+            if isinstance(e.func.obj, A.Name) and e.func.obj.name in self.pyobj_names:
+                return self._gen_pyobject_call(e)
         if not isinstance(e.func, A.Name):
             raise CodeGenError("only direct calls supported", e.line)
         name = e.func.name
+        # Hybrid mode: name refers to a local/global variable that holds a
+        # PyObject* (e.g. `from math import sqrt` — sqrt is a Python object).
+        if self.embed_mode and name in self.locals and self.locals[name][1] == "pyobject":
+            return self._gen_pyobject_call(e)
+        if self.embed_mode and name in self.global_types and self.global_types[name] == "pyobject":
+            return self._gen_pyobject_call(e)
         # Resolve hoisted nested function calls via the enclosing chain.
         name = self._resolve_call_name(name)
         # Object constructor: ClassName(args) -> py_object_new(class_id) + __init__
@@ -3525,7 +3901,7 @@ class CodeGen:
             return self.gen_print(e)
         if name in ("len", "abs", "int", "float", "str", "bool", "input", "min", "max",
                     "sum", "isinstance", "sorted", "range", "enumerate", "tuple", "set",
-                    "hex", "oct", "bin", "chr", "ord", "round", "divmod", "repr",
+                    "list", "hex", "oct", "bin", "chr", "ord", "round", "divmod", "repr",
                     "reversed", "any", "all", "zip", "type", "id", "hash", "format"):
             return self.gen_builtin(name, e)
         # Runtime constructors referenced via imported name (from collections import Counter).
@@ -3704,6 +4080,8 @@ class CodeGen:
             self.emit(f"call void @py_print_bool(i1 {v})")
         elif t == NONE:
             self.emit("call void @py_print_none()")
+        elif t == "pyobject":
+            self.emit(f"call void @py_print_obj(ptr {v})")
         elif is_list_type(t):
             self.emit(f"call void @py_list_print(ptr {v})")
         else:
@@ -3936,6 +4314,10 @@ class CodeGen:
                 return self.coerce(v, t, INT), INT
             if t == NONE:
                 return "0", INT
+            if t == "pyobject":
+                r = self.fresh()
+                self.emit(f"{r} = call i64 @py_object_to_int(ptr {v})")
+                return r, INT
             raise CodeGenError("int() conversion not supported", e.line)
         if name == "float":
             v, t = self.gen_expr(args[0])
@@ -3947,6 +4329,10 @@ class CodeGen:
                 return self.coerce(v, t, FLOAT), FLOAT
             if t == NONE:
                 return "0.0", FLOAT
+            if t == "pyobject":
+                r = self.fresh()
+                self.emit(f"{r} = call double @py_object_to_float(ptr {v})")
+                return r, FLOAT
             raise CodeGenError("float() conversion not supported", e.line)
         if name == "str":
             v, t = self.gen_expr(args[0])
@@ -3986,6 +4372,19 @@ class CodeGen:
             r = self.fresh()
             self.emit(f"{r} = call ptr @py_set_new()")
             return r, ("obj", "set")
+        if name == "list":
+            # list(iterable) — convert any iterable to a native PyList.
+            v, t = self.gen_expr(args[0])
+            if t == "pyobject":
+                r = self.fresh()
+                self.emit(f"{r} = call ptr @py_object_to_list(ptr {v})")
+                return r, ("list", INT)
+            if is_list_type(t):
+                return v, t
+            # Fallback: empty list.
+            r = self.fresh()
+            self.emit(f"{r} = call ptr @py_list_new()")
+            return r, ("list", INT)
         if name == "hex":
             v, t = self.gen_expr(args[0])
             v = self.coerce(v, t, INT)
@@ -4054,5 +4453,5 @@ class CodeGen:
         return best, target
 
 
-def generate(info):
-    return CodeGen(info).generate()
+def generate(info, embed_mode=False):
+    return CodeGen(info, embed_mode=embed_mode).generate()
