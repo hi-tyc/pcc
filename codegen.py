@@ -26,6 +26,7 @@ class CodeGenError(Exception):
 RUNTIME_DECLS = """\
 ; ---- runtime declarations ----
 declare ptr @py_str_concat(ptr, ptr)
+declare ptr @py_str_empty()
 declare ptr @py_str_mul(ptr, i64)
 declare ptr @py_int_to_str(i64)
 declare ptr @py_float_to_str(double)
@@ -45,6 +46,7 @@ declare void @py_print_bool(i1)
 declare void @py_print_none()
 declare i64 @strlen(ptr)
 declare i32 @strcmp(ptr, ptr)
+declare ptr @strstr(ptr, ptr)
 declare double @llvm.fabs.f64(double)
 declare double @llvm.floor.f64(double)
 declare double @llvm.pow.f64(double, double)
@@ -73,7 +75,9 @@ declare void @py_list_insert_float(ptr, i64, double)
 declare void @py_list_insert_str(ptr, i64, ptr)
 declare void @py_list_insert_list(ptr, i64, ptr)
 declare i64 @py_list_index_int(ptr, i64)
-declare i64 @py_list_index_str(ptr, ptr)
+declare ptr @py_list_index_str(ptr, ptr)
+declare i64 @py_list_count_int(ptr, i64)
+declare i64 @py_list_count_str(ptr, ptr)
 declare void @py_list_print(ptr)
 declare ptr @py_list_to_str(ptr)
 ; ---- list slicing / extend / pop_at ----
@@ -117,7 +121,18 @@ declare ptr @py_format_float(double, ptr)
 declare ptr @py_format_str(ptr, ptr)
 declare ptr @py_str_lower(ptr)
 declare ptr @py_str_upper(ptr)
+declare ptr @py_str_replace(ptr, ptr, ptr)
+declare i32 @py_str_startswith(ptr, ptr)
+declare i32 @py_str_endswith(ptr, ptr)
+declare i64 @py_str_find(ptr, ptr)
+declare ptr @py_str_strip(ptr)
+declare ptr @py_str_lstrip(ptr)
+declare ptr @py_str_rstrip(ptr)
+declare ptr @py_str_split(ptr, ptr)
+declare ptr @py_str_split_ws(ptr)
 declare void @py_list_sort_int(ptr)
+declare void @py_list_sort_float(ptr)
+declare void @py_list_sort_str(ptr)
 ; ---- threading / queue / regex ----
 declare ptr @py_thread_new(ptr, i64)
 declare void @py_thread_start(ptr)
@@ -135,6 +150,11 @@ declare void @py_queue_put(ptr, ptr)
 declare ptr @py_queue_get(ptr, i64)
 declare i64 @py_queue_size(ptr)
 declare i32 @py_queue_empty(ptr)
+declare void @py_queue_task_done(ptr)
+declare void @py_queue_join(ptr)
+declare ptr @py_queue_box_int(i64)
+declare ptr @py_queue_box_float(double)
+declare ptr @py_queue_box_str(ptr)
 declare ptr @py_re_sub(ptr, ptr, ptr)
 declare ptr @py_re_findall(ptr, ptr)
 ; ---- Counter ----
@@ -145,6 +165,94 @@ declare ptr @py_counter_values(ptr)
 declare i64 @py_counter_len(ptr)
 declare ptr @py_counter_most_common(ptr, i64)
 declare ptr @py_object_get_as_str(ptr, ptr)
+; ---- set runtime ----
+declare ptr @py_set_new()
+declare void @py_set_add_int(ptr, i64)
+declare void @py_set_add_str(ptr, ptr)
+declare i32 @py_set_contains_int(ptr, i64)
+declare i32 @py_set_contains_str(ptr, ptr)
+declare i64 @py_set_len(ptr)
+declare void @py_set_remove_int(ptr, i64)
+declare void @py_set_remove_str(ptr, ptr)
+declare ptr @py_set_to_list_int(ptr)
+declare ptr @py_set_to_list_str(ptr)
+; ---- dict methods ----
+declare ptr @py_dict_keys(ptr)
+declare ptr @py_dict_values(ptr)
+declare ptr @py_dict_items(ptr)
+declare i32 @py_dict_contains(ptr, ptr)
+declare i64 @py_dict_get_int(ptr, ptr, i64)
+declare double @py_dict_get_float(ptr, ptr, double)
+declare ptr @py_dict_get_str(ptr, ptr, ptr)
+declare ptr @py_dict_get_obj(ptr, ptr, ptr)
+; ---- math module ----
+declare double @py_math_sqrt(double)
+declare double @py_math_pow(double, double)
+declare double @py_math_log(double)
+declare double @py_math_log2(double)
+declare double @py_math_log10(double)
+declare double @py_math_sin(double)
+declare double @py_math_cos(double)
+declare double @py_math_tan(double)
+declare double @py_math_floor(double)
+declare double @py_math_ceil(double)
+declare double @py_math_fabs(double)
+declare double @py_math_exp(double)
+declare i64 @py_math_gcd(i64, i64)
+declare i64 @py_math_lcm(i64, i64)
+declare double @py_math_pi()
+declare double @py_math_e()
+declare double @py_math_inf()
+declare double @py_math_nan()
+; ---- exception handling ----
+declare void @py_exc_push()
+declare i32 @py_exc_catch()
+declare void @py_exc_pop()
+declare ptr @py_exc_msg()
+declare i32 @py_exc_kind()
+declare void @py_exc_raise(i32, ptr)
+declare void @py_exc_raise_value(ptr)
+declare void @py_exc_raise_type(ptr)
+declare void @py_exc_raise_zerodiv(ptr)
+declare void @py_exc_raise_key(ptr)
+declare void @py_exc_raise_index(ptr)
+declare void @py_exc_raise_stopiter()
+; ---- more string methods ----
+declare ptr @py_str_ljust(ptr, i64, ptr)
+declare ptr @py_str_rjust(ptr, i64, ptr)
+declare ptr @py_str_center(ptr, i64, ptr)
+declare ptr @py_str_zfill(ptr, i64)
+declare ptr @py_str_title(ptr)
+declare ptr @py_str_capitalize(ptr)
+declare ptr @py_str_swapcase(ptr)
+declare ptr @py_str_removeprefix(ptr, ptr)
+declare ptr @py_str_removesuffix(ptr, ptr)
+declare i64 @py_str_count(ptr, ptr)
+; ---- more builtins ----
+declare ptr @py_hex(i64)
+declare ptr @py_oct(i64)
+declare ptr @py_bin(i64)
+declare i64 @py_ord(ptr)
+declare ptr @py_chr(i64)
+declare double @py_round(double, i64)
+declare i64 @py_round_int(double)
+declare void @py_divmod(i64, i64, ptr, ptr)
+; ---- string module constants ----
+declare ptr @py_string_ascii_letters()
+declare ptr @py_string_ascii_lowercase()
+declare ptr @py_string_ascii_uppercase()
+declare ptr @py_string_digits()
+declare ptr @py_string_hexdigits()
+declare ptr @py_string_octdigits()
+declare ptr @py_string_punctuation()
+declare ptr @py_string_whitespace()
+; ---- iterator support ----
+declare ptr @py_iter_list(ptr)
+declare ptr @py_iter_str(ptr)
+declare ptr @py_iter_range(i64, i64, i64)
+declare i32 @py_iter_has_next(ptr)
+declare i64 @py_iter_next_int(ptr)
+declare ptr @py_iter_next_str(ptr)
 """
 
 
@@ -233,6 +341,7 @@ def escape_llvm_bytes(raw):
 class CodeGen:
     def __init__(self, info):
         self.funcs = info["funcs"]
+        self.func_names = set(info["funcs"].keys())
         self.top_stmts = info["top_stmts"]
         self.global_types = info["globals"]
         self.classes = info.get("classes", {})
@@ -295,6 +404,13 @@ class CodeGen:
 
     def insert_alloca(self, line):
         self.body.insert(self.entry_alloca_index(), "  " + line)
+
+    def void_result(self):
+        """Return a void result (for statements that produce no value)."""
+        return "0", NONE
+
+    def null_ptr(self):
+        return "null", NONE
 
     # ---- string interning ----
     def intern_string(self, content):
@@ -457,11 +573,13 @@ class CodeGen:
                 raise CodeGenError("continue outside loop", s.line)
             self.br(self.loop_stack[-1][0])
         elif isinstance(s, (A.Pass, A.Global, A.Import, A.ImportFrom, A.ClassDef,
-                            A.FuncDef, A.Raise)):
+                            A.FuncDef)):
             # Imports are no-ops (names already resolved by semantic analyzer).
             # ClassDef/FuncDef are hoisted to top-level by the semantic analyzer.
-            # Raise is a no-op (no real exception support).
             pass
+        elif isinstance(s, A.Raise):
+            self.gen_raise(s)
+            return
         elif isinstance(s, A.If):
             self.gen_if(s)
         elif isinstance(s, A.While):
@@ -510,6 +628,20 @@ class CodeGen:
         else:
             cur, ct = self.load_var(target.name, s.line)
             rval, rt = self.gen_expr(s.value)
+            if s.op == "**":
+                if numeric_base(ct) == INT and numeric_base(rt) == INT:
+                    a = self.coerce(cur, ct, INT)
+                    b = self.coerce(rval, rt, INT)
+                    r = self.fresh()
+                    self.emit(f"{r} = call i64 @py_ipow(i64 {a}, i64 {b})")
+                    self.store_var(target.name, r, INT, s.line)
+                else:
+                    cur_f = self.coerce(cur, ct, FLOAT)
+                    val_f = self.coerce(rval, rt, FLOAT)
+                    r = self.fresh()
+                    self.emit(f"{r} = call double @py_fpow(double {cur_f}, double {val_f})")
+                    self.store_var(target.name, r, FLOAT, s.line)
+                return
             res, rest = self.gen_binop(s.op, cur, ct, rval, rt, ct, s.line)
             self.store_var(target.name, res, rest, s.line)
 
@@ -597,50 +729,66 @@ class CodeGen:
                 self.emit(f"call void @py_lock_release(ptr {cv})")
 
     def gen_try(self, s):
-        """try/except — simplified model with no real exception machinery.
-        For the common `x = queue.get(timeout=...)` / `except queue.Empty`
-        pattern, we check the NULL return to branch to the handler. For any
-        other pattern, fall back to running body then handlers sequentially."""
-        body = s.body
-        # Detect the queue.get timeout pattern: single Assign whose value is a
-        # MethodCall with method "get", with at least one except handler.
-        if (len(body) == 1 and isinstance(body[0], A.Assign)
-                and isinstance(body[0].target, A.Name)
-                and isinstance(body[0].value, A.MethodCall)
-                and body[0].value.method == "get"
-                and s.handlers):
-            varname = body[0].target.name
-            # Generate the assignment (stores result in varname's slot).
-            self.gen_stmt(body[0])
-            if self.terminated:
-                return
-            # Load the result and check for NULL.
-            slot, vtype, _ = self.locals[varname]
-            loaded = self.fresh()
-            self.emit(f"{loaded} = load ptr, ptr {slot}")
-            cond = self.fresh()
-            self.emit(f"{cond} = icmp eq ptr {loaded}, null")
-            except_label = self.fresh_label("except")
-            end_label = self.fresh_label("tryend")
-            self.cbr(cond, except_label, end_label)
-            # Except handler(s).
-            self.place_block(except_label)
-            for exc_type, name, hb in s.handlers:
-                for st in hb:
-                    self.gen_stmt(st)
-            if not self.terminated:
-                self.br(end_label)
-            # Continuation after try.
-            self.place_block(end_label)
-            return
-        # Fallback: run body then handlers sequentially.
-        for st in body:
+        """try/except — flag-based exception handling."""
+        self.emit("call void @py_exc_push()")
+
+        end_label = self.fresh_label("tryend")
+        handler_label = self.fresh_label("handler")
+
+        # Generate try body, checking for exception after each statement
+        for st in s.body:
             self.gen_stmt(st)
-        if self.terminated:
-            return
+            if self.terminated:
+                break
+            # Check if an exception was raised
+            caught = self.fresh()
+            self.emit(f"{caught} = call i32 @py_exc_catch()")
+            has_exc = self.fresh()
+            self.emit(f"{has_exc} = icmp ne i32 {caught}, 0")
+            no_exc = self.fresh_label("no_exc")
+            self.cbr(has_exc, handler_label, no_exc)
+            self.place_block(no_exc)
+
+        if not self.terminated:
+            # No exception - pop and continue
+            self.emit("call void @py_exc_pop()")
+            self.br(end_label)
+
+        # Exception handler
+        self.place_block(handler_label)
         for exc_type, name, hb in s.handlers:
+            if name:
+                msg = self.fresh()
+                self.emit(f"{msg} = call ptr @py_exc_msg()")
+                self.store_var(name, msg, STR, s.line)
             for st in hb:
                 self.gen_stmt(st)
+                if self.terminated:
+                    break
+            if not self.terminated:
+                break
+
+        if not self.terminated:
+            self.emit("call void @py_exc_pop()")
+            self.br(end_label)
+
+        self.place_block(end_label)
+
+    def gen_raise(self, s):
+        """raise Exception("msg") — raise an exception."""
+        if s.exc is None:
+            # re-raise
+            self.emit("call void @py_exc_raise(i32 1, ptr null)")
+            return
+        val, vtype = self.gen_expr(s.exc)
+        # If it's a string, raise ValueError
+        if vtype == STR:
+            self.emit(f"call void @py_exc_raise_value(ptr {val})")
+        elif is_obj_type(vtype):
+            # Get the exception message - for simplicity, raise with kind 1
+            self.emit(f"call void @py_exc_raise(i32 1, ptr null)")
+        else:
+            self.emit(f"call void @py_exc_raise(i32 1, ptr null)")
 
     def gen_if(self, s):
         end_label = self.fresh_label("if.end")
@@ -1021,6 +1169,8 @@ class CodeGen:
             return self.gen_isop(e)
         if isinstance(e, A.ListComp):
             return self.gen_listcomp(e)
+        if isinstance(e, A.DictComp):
+            return self.gen_dictcomp(e)
         if isinstance(e, A.DictLit):
             return self.gen_dict_lit(e)
         raise CodeGenError(f"unhandled expression {type(e).__name__}", e.line)
@@ -1486,6 +1636,125 @@ class CodeGen:
         self.br(skip_label)
         self.place_block(skip_label)
 
+    def gen_dictcomp(self, e):
+        """Dict comprehension: {k: v for var in iterable (if cond)*}."""
+        result = self.fresh()
+        self.emit(f"{result} = call ptr @py_object_new(i32 999)")
+        it = e.iterable
+        it_type = getattr(it, "type", None)
+        # range-based
+        if isinstance(it, A.Call) and isinstance(it.func, A.Name) and it.func.name == "range":
+            args = it.args
+            if len(args) == 1:
+                stop_val, stop_t = self.gen_expr(args[0])
+                start, stop, step = "0", self.coerce(stop_val, stop_t, INT), "1"
+            elif len(args) == 2:
+                sv, st0 = self.gen_expr(args[0])
+                ev, et0 = self.gen_expr(args[1])
+                start, stop, step = self.coerce(sv, st0, INT), self.coerce(ev, et0, INT), "1"
+            else:
+                sv, st0 = self.gen_expr(args[0])
+                ev, et0 = self.gen_expr(args[1])
+                tv, tt0 = self.gen_expr(args[2])
+                start = self.coerce(sv, st0, INT)
+                stop = self.coerce(ev, et0, INT)
+                step = self.coerce(tv, tt0, INT)
+            var_name = e.var[0] if isinstance(e.var, list) else e.var
+            self._ensure_local(var_name, INT)
+            self.store_var(var_name, start, INT, e.line)
+            cond_label = self.fresh_label("dc.cond")
+            body_label = self.fresh_label("dc.body")
+            cont_label = self.fresh_label("dc.cont")
+            end_label = self.fresh_label("dc.end")
+            self.br(cond_label)
+            self.place_block(cond_label)
+            cur, _ = self.load_var(var_name, e.line)
+            cmp_pos = self.fresh()
+            self.emit(f"{cmp_pos} = icmp slt i64 {cur}, {stop}")
+            cmp_neg = self.fresh()
+            self.emit(f"{cmp_neg} = icmp sgt i64 {cur}, {stop}")
+            pos = self.fresh()
+            self.emit(f"{pos} = icmp sgt i64 {step}, 0")
+            cmp = self.fresh()
+            self.emit(f"{cmp} = select i1 {pos}, i1 {cmp_pos}, i1 {cmp_neg}")
+            self.cbr(cmp, body_label, end_label)
+            self.place_block(body_label)
+            self._emit_dictcomp_body(e, result)
+            self.br(cont_label)
+            self.place_block(cont_label)
+            cur2, _ = self.load_var(var_name, e.line)
+            nxt = self.fresh()
+            self.emit(f"{nxt} = add i64 {cur2}, {step}")
+            self.store_var(var_name, nxt, INT, e.line)
+            self.br(cond_label)
+            self.place_block(end_label)
+            return result, ("dict", STR, NONE)
+        # list-based
+        if is_list_type(it_type):
+            lv, _ = self.gen_expr(it)
+            lenr = self.fresh()
+            self.emit(f"{lenr} = call i64 @py_list_len(ptr {lv})")
+            idx_slot = self.fresh()
+            self.insert_alloca(f"{idx_slot} = alloca i64")
+            self.emit(f"store i64 0, ptr {idx_slot}")
+            cond_label = self.fresh_label("dc.cond")
+            body_label = self.fresh_label("dc.body")
+            cont_label = self.fresh_label("dc.cont")
+            end_label = self.fresh_label("dc.end")
+            self.br(cond_label)
+            self.place_block(cond_label)
+            ci = self.fresh()
+            self.emit(f"{ci} = load i64, ptr {idx_slot}")
+            cmp = self.fresh()
+            self.emit(f"{cmp} = icmp slt i64 {ci}, {lenr}")
+            self.cbr(cmp, body_label, end_label)
+            self.place_block(body_label)
+            elem_et = list_elem_type(it_type)
+            ev = self._list_get_typed(lv, ci, elem_et, e.line)
+            var_name = e.var[0] if isinstance(e.var, list) else e.var
+            self._ensure_local(var_name, elem_et if elem_et else NONE)
+            self.store_var(var_name, ev, elem_et, e.line)
+            self._emit_dictcomp_body(e, result)
+            self.br(cont_label)
+            self.place_block(cont_label)
+            ci2 = self.fresh()
+            self.emit(f"{ci2} = load i64, ptr {idx_slot}")
+            nxt = self.fresh()
+            self.emit(f"{nxt} = add i64 {ci2}, 1")
+            self.emit(f"store i64 {nxt}, ptr {idx_slot}")
+            self.br(cond_label)
+            self.place_block(end_label)
+            return result, ("dict", STR, NONE)
+        raise CodeGenError("dict comprehension only supports range/list iterables", e.line)
+
+    def _emit_dictcomp_body(self, e, result):
+        """Emit the body of a dict comprehension: evaluate conditions, then set k: v."""
+        skip_label = self.fresh_label("dc.skip")
+        for cond in e.conditions:
+            cv, ct = self.gen_expr(cond)
+            cb = self.to_bool(cv, ct)
+            cont_label = self.fresh_label("dc.cont")
+            self.cbr(cb, cont_label, skip_label)
+            self.place_block(cont_label)
+        kv, kt = self.gen_expr(e.key_expr)
+        kv = self.coerce(kv, kt, STR)
+        vv, vt = self.gen_expr(e.val_expr)
+        if vt == INT or vt == BOOL:
+            v = self.coerce(vv, vt, INT)
+            self.emit(f"call void @py_object_set_int(ptr {result}, ptr {kv}, i64 {v})")
+        elif vt == FLOAT:
+            v = self.coerce(vv, vt, FLOAT)
+            self.emit(f"call void @py_object_set_float(ptr {result}, ptr {kv}, double {v})")
+        elif vt == STR:
+            self.emit(f"call void @py_object_set_str(ptr {result}, ptr {kv}, ptr {vv})")
+        elif vt == NONE:
+            self.emit(f"call void @py_object_set_none(ptr {result}, ptr {kv})")
+        else:
+            v = self.coerce(vv, vt, vt if isinstance(vt, tuple) else ("obj", "unknown"))
+            self.emit(f"call void @py_object_set_obj(ptr {result}, ptr {kv}, ptr {v})")
+        self.br(skip_label)
+        self.place_block(skip_label)
+
     def gen_subscript(self, e):
         obj_type = self._obj_type_of(e.obj)
         # String indexing: s[i] -> single-char string
@@ -1685,8 +1954,28 @@ class CodeGen:
         # Evaluate obj to get both the value and its type (see gen_attr_assign
         # for why we don't rely on e.obj.type).
         ov, obj_type = self.gen_expr(e.obj)
-        # Module attribute access returns the module itself (opaque).
+        # Module attribute access: handle module constants
         if is_module_type(obj_type):
+            mod_name = obj_type[1] if obj_type[0] == "module" else obj_type[1]
+            top_mod = mod_name.split(".")[-1] if "." in mod_name else mod_name
+            attr = e.attr
+            # Math module constants
+            if top_mod == "math" and attr in ("pi", "e", "inf", "nan"):
+                fn_map = {"pi": "py_math_pi", "e": "py_math_e", "inf": "py_math_inf", "nan": "py_math_nan"}
+                r = self.fresh()
+                self.emit(f"{r} = call double @{fn_map[attr]}()")
+                return r, FLOAT
+            # String module constants
+            if top_mod == "string" and attr in ("ascii_letters", "ascii_lowercase", "ascii_uppercase",
+                                                  "digits", "hexdigits", "octdigits", "punctuation", "whitespace"):
+                fn_map = {"ascii_letters": "py_string_ascii_letters", "ascii_lowercase": "py_string_ascii_lowercase",
+                          "ascii_uppercase": "py_string_ascii_uppercase", "digits": "py_string_digits",
+                          "hexdigits": "py_string_hexdigits", "octdigits": "py_string_octdigits",
+                          "punctuation": "py_string_punctuation", "whitespace": "py_string_whitespace"}
+                r = self.fresh()
+                self.emit(f"{r} = call ptr @{fn_map[attr]}()")
+                return r, STR
+            # Other module attributes: return as opaque
             return ov, obj_type
         if obj_type == NONE or obj_type is None:
             # Unknown type (e.g. element read from a list with unknown element
@@ -1799,6 +2088,61 @@ class CodeGen:
             return self.gen_module_method_call(e, obj_type)
         if obj_type == STR:
             return self.gen_str_method(e, obj_type)
+        # Dict methods
+        if isinstance(obj_type, tuple) and obj_type[0] == "dict":
+            objval, _ = self.gen_expr(e.obj)
+            if e.method == "keys":
+                r = self.fresh()
+                self.emit(f"{r} = call ptr @py_dict_keys(ptr {objval})")
+                return r, ("list", STR)
+            if e.method == "values":
+                r = self.fresh()
+                self.emit(f"{r} = call ptr @py_dict_values(ptr {objval})")
+                return r, ("list", NONE)
+            if e.method == "items":
+                r = self.fresh()
+                self.emit(f"{r} = call ptr @py_dict_items(ptr {objval})")
+                return r, ("list", NONE)
+            if e.method == "get":
+                # dict.get(key) or dict.get(key, default)
+                kvv, kvt = self.gen_expr(e.args[0])
+                kvv = self.coerce(kvv, kvt, STR)
+                # Use a generic getter that handles all value types
+                vt = getattr(e, "type", NONE)
+                if vt == INT or vt == BOOL:
+                    dval = 0
+                    if len(e.args) > 1:
+                        dvv, dvt = self.gen_expr(e.args[1])
+                        dval = self.coerce(dvv, dvt, INT)
+                    out = self.fresh()
+                    self.emit(f"{out} = call i64 @py_dict_get_int(ptr {objval}, ptr {kvv}, i64 {dval})")
+                    return out, INT
+                elif vt == FLOAT:
+                    dval = "0.0"
+                    if len(e.args) > 1:
+                        dvv, dvt = self.gen_expr(e.args[1])
+                        dval = self.coerce(dvv, dvt, FLOAT)
+                    out = self.fresh()
+                    self.emit(f"{out} = call double @py_dict_get_float(ptr {objval}, ptr {kvv}, double {dval})")
+                    return out, FLOAT
+                elif vt == STR:
+                    dval = "null"
+                    if len(e.args) > 1:
+                        dvv, dvt = self.gen_expr(e.args[1])
+                        dval = self.coerce(dvv, dvt, STR)
+                    out = self.fresh()
+                    self.emit(f"{out} = call ptr @py_dict_get_str(ptr {objval}, ptr {kvv}, ptr {dval})")
+                    return out, STR
+                else:
+                    dval = "null"
+                    if len(e.args) > 1:
+                        dvv, dvt = self.gen_expr(e.args[1])
+                        dval = self.coerce(dvv, dvt, ("obj", "None"))
+                    r = self.fresh()
+                    self.emit(f"{r} = call ptr @py_dict_get_obj(ptr {objval}, ptr {kvv}, ptr {dval})")
+                    return r, NONE
+            if e.method in ("update", "clear", "pop"):
+                return self.void_result()
         if obj_type == NONE or obj_type is None:
             # Unknown type (e.g. dict value, element from a list with unknown
             # element type). Try common list methods first, then fall back to
@@ -1868,6 +2212,41 @@ class CodeGen:
             fn = "py_str_lower" if m == "lower" else "py_str_upper"
             self.emit(f"{r} = call ptr @{fn}(ptr {sv})")
             return r, STR
+        if m == "replace":
+            old, _ = self.gen_expr(e.args[0])
+            new, _ = self.gen_expr(e.args[1])
+            r = self.fresh()
+            self.emit(f"{r} = call ptr @py_str_replace(ptr {sv}, ptr {old}, ptr {new})")
+            return r, STR
+        if m in ("startswith", "endswith"):
+            prefix, _ = self.gen_expr(e.args[0])
+            r = self.fresh()
+            fn = "py_str_startswith" if m == "startswith" else "py_str_endswith"
+            self.emit(f"{r} = call i32 @{fn}(ptr {sv}, ptr {prefix})")
+            b = self.fresh()
+            self.emit(f"{b} = icmp ne i32 {r}, 0")
+            return b, BOOL
+        if m == "find":
+            sub, _ = self.gen_expr(e.args[0])
+            r = self.fresh()
+            self.emit(f"{r} = call i64 @py_str_find(ptr {sv}, ptr {sub})")
+            return r, INT
+        if m in ("strip", "lstrip", "rstrip"):
+            r = self.fresh()
+            fn = {"strip": "py_str_strip", "lstrip": "py_str_lstrip", "rstrip": "py_str_rstrip"}[m]
+            self.emit(f"{r} = call ptr @{fn}(ptr {sv})")
+            return r, STR
+        if m == "split":
+            # split by delimiter; default is whitespace
+            delim = None
+            if e.args:
+                delim, _ = self.gen_expr(e.args[0])
+            r = self.fresh()
+            if delim is not None:
+                self.emit(f"{r} = call ptr @py_str_split(ptr {sv}, ptr {delim})")
+            else:
+                self.emit(f"{r} = call ptr @py_str_split_ws(ptr {sv})")
+            return r, ("list", STR)
         raise CodeGenError(f"string method '{m}' not supported", e.line)
 
     def gen_list_method(self, e, obj_type):
@@ -2000,7 +2379,21 @@ class CodeGen:
         if m in ("clear", "task_done", "sort", "reverse"):
             return "0", NONE
         if m == "count":
-            return "0", INT
+            av, at = self.gen_expr(e.args[0])
+            et = list_elem_type(obj_type) if list_elem_type(obj_type) else INT
+            r = self.fresh()
+            if et == INT or et == BOOL:
+                av = self.coerce(av, at, INT)
+                self.emit(f"{r} = call i64 @py_list_count_int(ptr {lv}, i64 {av})")
+            elif et == STR:
+                av = self.coerce(av, at, STR)
+                self.emit(f"{r} = call i64 @py_list_count_str(ptr {lv}, ptr {av})")
+            else:
+                av = self.coerce(av, at, et if isinstance(et, tuple) else ("obj", "unknown"))
+                ai = self.fresh()
+                self.emit(f"{ai} = ptrtoint ptr {av} to i64")
+                self.emit(f"{r} = call i64 @py_list_count_int(ptr {lv}, i64 {ai})")
+            return r, INT
         raise CodeGenError(f"unsupported list method '{m}'", e.line)
 
     def gen_obj_method_call(self, e, obj_type):
@@ -2037,7 +2430,21 @@ class CodeGen:
             ov, _ = self.gen_expr(e.obj)
             if m == "put":
                 v, t = self.gen_expr(e.args[0])
-                self.emit(f"call void @py_queue_put(ptr {ov}, ptr {v})")
+                if t == STR:
+                    # Strings can be stored as ptrs directly (they're already ptrs).
+                    self.emit(f"call void @py_queue_put(ptr {ov}, ptr {v})")
+                elif numeric_base(t) == INT or t == BOOL:
+                    # Box ints into a PyList* so they can be stored as ptr.
+                    boxed = self.fresh()
+                    self.emit(f"{boxed} = call ptr @py_queue_box_int(i64 {v})")
+                    self.emit(f"call void @py_queue_put(ptr {ov}, ptr {boxed})")
+                elif t == FLOAT:
+                    boxed = self.fresh()
+                    self.emit(f"{boxed} = call ptr @py_queue_box_float(double {v})")
+                    self.emit(f"call void @py_queue_put(ptr {ov}, ptr {boxed})")
+                else:
+                    # Fallback: cast to ptr (works for lists/objects)
+                    self.emit(f"call void @py_queue_put(ptr {ov}, ptr {v})")
                 return "0", NONE
             if m == "get":
                 timeout = "0"
@@ -2049,7 +2456,28 @@ class CodeGen:
                     timeout = self.coerce(tv, tt, INT)
                 r = self.fresh()
                 self.emit(f"{r} = call ptr @py_queue_get(ptr {ov}, i64 {timeout})")
-                return r, STR
+                # If timed out, py_queue_get returns NULL — raise queue.Empty
+                # exception so the enclosing try/except can catch it.
+                is_null = self.fresh()
+                self.emit(f"{is_null} = icmp eq ptr {r}, null")
+                raise_label = self.fresh_label("qget_raise")
+                cont_label = self.fresh_label("qget_cont")
+                pred_label = self.current_label  # predecessor of cont_label
+                self.cbr(is_null, raise_label, cont_label)
+                self.place_block(raise_label)
+                self.emit('call void @py_exc_raise(i32 10, ptr null)')
+                # Use a dummy value to keep SSA valid.
+                dummy = self.fresh()
+                self.emit(f"{dummy} = call ptr @py_str_empty()")
+                self.br(cont_label)
+                self.place_block(cont_label)
+                phi = self.fresh()
+                self.emit(f"{phi} = phi ptr [{r}, %{pred_label}], [{dummy}, %{raise_label}]")
+                # The returned value is either the original string ptr (if STR)
+                # or a PyList* (if INT/FLOAT). The semantic analyzer infers
+                # the return type; the codegen returns a ptr that's compatible
+                # with the type. For STR, the ptr is the string itself.
+                return phi, STR
             if m == "empty":
                 r = self.fresh()
                 self.emit(f"{r} = call i32 @py_queue_empty(ptr {ov})")
@@ -2061,6 +2489,10 @@ class CodeGen:
                 self.emit(f"{r} = call i64 @py_queue_size(ptr {ov})")
                 return r, INT
             if m == "task_done":
+                self.emit(f"call void @py_queue_task_done(ptr {ov})")
+                return "0", NONE
+            if m == "join":
+                self.emit(f"call void @py_queue_join(ptr {ov})")
                 return "0", NONE
         if class_name == "Thread":
             ov, _ = self.gen_expr(e.obj)
@@ -2110,6 +2542,34 @@ class CodeGen:
                 return "0", NONE
             if m in ("pop", "popleft"):
                 return "0", NONE
+        if class_name == "set":
+            objval, _ = self.gen_expr(e.obj)
+            if m == "add":
+                arg_val, arg_type = self.gen_expr(e.args[0])
+                if arg_type == INT:
+                    self.emit(f"call void @py_set_add_int(ptr {objval}, i64 {arg_val})")
+                elif arg_type == STR:
+                    self.emit(f"call void @py_set_add_str(ptr {objval}, ptr {arg_val})")
+                return self.void_result()
+            if m == "remove" or m == "discard":
+                arg_val, arg_type = self.gen_expr(e.args[0])
+                if arg_type == INT:
+                    self.emit(f"call void @py_set_remove_int(ptr {objval}, i64 {arg_val})")
+                elif arg_type == STR:
+                    self.emit(f"call void @py_set_remove_str(ptr {objval}, ptr {arg_val})")
+                return self.void_result()
+            if m == "contains":
+                arg_val, arg_type = self.gen_expr(e.args[0])
+                r = self.fresh()
+                if arg_type == INT:
+                    self.emit(f"{r} = call i32 @py_set_contains_int(ptr {objval}, i64 {arg_val})")
+                elif arg_type == STR:
+                    self.emit(f"{r} = call i32 @py_set_contains_str(ptr {objval}, ptr {arg_val})")
+                return r, BOOL
+            if m == "len" or m == "__len__":
+                r = self.fresh()
+                self.emit(f"{r} = call i64 @py_set_len(ptr {objval})")
+                return r, INT
         # User-defined class method: call the mangled function.
         if class_name in self.classes:
             methods = self.classes[class_name]["methods"]
@@ -2222,8 +2682,7 @@ class CodeGen:
                 p, _ = self.gen_expr(e.args[0])
                 # If the replacement is a lambda callback, skip substitution
                 # (lambda callbacks are not supported by the runtime).
-                if isinstance(e.args[1], A.Call) and isinstance(e.args[1].func, A.Name) \
-                        and e.args[1].func.name == "__lambda__":
+                if isinstance(e.args[1], A.Name) and e.args[1].name.startswith("__lambda_"):
                     s3, _ = self.gen_expr(e.args[2])
                     return s3, STR
                 r2, _ = self.gen_expr(e.args[1])
@@ -2307,6 +2766,60 @@ class CodeGen:
                 r = self.fresh()
                 self.emit(f"{r} = call ptr @py_list_new()")
                 return r, ("obj", "deque")
+        if top_mod == "math":
+            math_float_fns = {
+                "sqrt": "py_math_sqrt", "log": "py_math_log", "log2": "py_math_log2",
+                "log10": "py_math_log10", "sin": "py_math_sin", "cos": "py_math_cos",
+                "tan": "py_math_tan", "floor": "py_math_floor", "ceil": "py_math_ceil",
+                "fabs": "py_math_fabs", "exp": "py_math_exp",
+            }
+            math_float2_fns = {"pow": "py_math_pow"}
+            math_const_fns = {"pi": "py_math_pi", "e": "py_math_e", "inf": "py_math_inf", "nan": "py_math_nan"}
+            math_int_fns = {"gcd": "py_math_gcd", "lcm": "py_math_lcm"}
+            if m in math_float_fns:
+                arg_val, arg_type = self.gen_expr(e.args[0])
+                arg_val = self.coerce(arg_val, arg_type, FLOAT)
+                r = self.fresh()
+                self.emit(f"{r} = call double @{math_float_fns[m]}(double {arg_val})")
+                return r, FLOAT
+            if m in math_float2_fns:
+                a1, t1 = self.gen_expr(e.args[0])
+                a2, t2 = self.gen_expr(e.args[1])
+                a1 = self.coerce(a1, t1, FLOAT)
+                a2 = self.coerce(a2, t2, FLOAT)
+                r = self.fresh()
+                self.emit(f"{r} = call double @{math_float2_fns[m]}(double {a1}, double {a2})")
+                return r, FLOAT
+            if m in math_const_fns:
+                r = self.fresh()
+                self.emit(f"{r} = call double @{math_const_fns[m]}()")
+                return r, FLOAT
+            if m in math_int_fns:
+                a1, t1 = self.gen_expr(e.args[0])
+                a2, t2 = self.gen_expr(e.args[1])
+                a1 = self.coerce(a1, t1, INT)
+                a2 = self.coerce(a2, t2, INT)
+                r = self.fresh()
+                self.emit(f"{r} = call i64 @{math_int_fns[m]}(i64 {a1}, i64 {a2})")
+                return r, INT
+        if top_mod == "string":
+            string_consts = {
+                "ascii_letters": "py_string_ascii_letters",
+                "ascii_lowercase": "py_string_ascii_lowercase",
+                "ascii_uppercase": "py_string_ascii_uppercase",
+                "digits": "py_string_digits",
+                "hexdigits": "py_string_hexdigits",
+                "octdigits": "py_string_octdigits",
+                "punctuation": "py_string_punctuation",
+                "whitespace": "py_string_whitespace",
+            }
+            if m in string_consts:
+                r = self.fresh()
+                self.emit(f"{r} = call ptr @{string_consts[m]}()")
+                return r, STR
+        # User module: direct function call
+        if e.method in self.func_names:
+            return self.gen_user_call(e.method, e)
         raise CodeGenError(f"unsupported module method '{m}' on {mod_name}", e.line)
 
     def coerce(self, value, src, dst):
@@ -2329,6 +2842,20 @@ class CodeGen:
         if src == FLOAT and dst == INT:
             r = self.fresh()
             self.emit(f"{r} = fptosi double {value} to i64")
+            return r
+        if src == INT and dst == STR:
+            r = self.fresh()
+            self.emit(f"{r} = call ptr @py_int_to_str(i64 {value})")
+            return r
+        if src == FLOAT and dst == STR:
+            r = self.fresh()
+            self.emit(f"{r} = call ptr @py_float_to_str(double {value})")
+            return r
+        if src == BOOL and dst == STR:
+            r = self.fresh()
+            i = self.fresh()
+            self.emit(f"{i} = zext i1 {value} to i64")
+            self.emit(f"{r} = call ptr @py_int_to_str(i64 {i})")
             return r
         if src == NONE:
             # NONE may mean either Python's None or an unknown-typed value
@@ -2465,6 +2992,141 @@ class CodeGen:
     def gen_binop(self, op, lv, lt, rv, rt, result_type, line):
         if op in ("==", "!=", "<", ">", "<=", ">="):
             return self.gen_compare(op, lv, lt, rv, rt, line), BOOL
+        # `in` / `not in` on a set: use py_set_contains
+        if op in ("in", "not in") and is_obj_type(rt) and rt[1] == "set":
+            if lt == INT:
+                r = self.fresh()
+                self.emit(f"{r} = call i32 @py_set_contains_int(ptr {rv}, i64 {lv})")
+            else:
+                lstr = self.coerce(lv, lt, STR)
+                r = self.fresh()
+                self.emit(f"{r} = call i32 @py_set_contains_str(ptr {rv}, ptr {lstr})")
+            b = self.fresh()
+            self.emit(f"{b} = icmp ne i32 {r}, 0")
+            if op == "not in":
+                nb = self.fresh()
+                self.emit(f"{nb} = xor i1 {b}, true")
+                b = nb
+            return b, BOOL
+        # `in` / `not in` on a list: linear scan
+        if op in ("in", "not in") and is_list_type(rt):
+            lenr = self.fresh()
+            self.emit(f"{lenr} = call i64 @py_list_len(ptr {rv})")
+            et = list_elem_type(rt) if list_elem_type(rt) else INT
+            i_slot = self.fresh()
+            self.insert_alloca(f"{i_slot} = alloca i64")
+            self.emit(f"store i64 0, ptr {i_slot}")
+            # Need a flag alloca to track if found
+            found_slot = self.fresh()
+            self.insert_alloca(f"{found_slot} = alloca i1")
+            self.emit(f"store i1 0, ptr {found_slot}")
+            cond = self.fresh_label("in.cond")
+            body = self.fresh_label("in.body")
+            end = self.fresh_label("in.end")
+            self.br(cond)
+            self.place_block(cond)
+            ci = self.fresh()
+            self.emit(f"{ci} = load i64, ptr {i_slot}")
+            cmp = self.fresh()
+            self.emit(f"{cmp} = icmp slt i64 {ci}, {lenr}")
+            self.cbr(cmp, body, end)
+            self.place_block(body)
+            ev = self._list_get_typed(rv, ci, et, line)
+            # Compare lv == ev
+            cv = self.gen_compare("==", lv, lt, ev, et, line)
+            cvi = self.fresh()
+            self.emit(f"{cvi} = zext i1 {cv} to i1")
+            cur = self.fresh()
+            self.emit(f"{cur} = load i1, ptr {found_slot}")
+            newf = self.fresh()
+            self.emit(f"{newf} = or i1 {cur}, {cvi}")
+            self.emit(f"store i1 {newf}, ptr {found_slot}")
+            ci2 = self.fresh()
+            self.emit(f"{ci2} = load i64, ptr {i_slot}")
+            nxt = self.fresh()
+            self.emit(f"{nxt} = add i64 {ci2}, 1")
+            self.emit(f"store i64 {nxt}, ptr {i_slot}")
+            self.br(cond)
+            self.place_block(end)
+            found = self.fresh()
+            self.emit(f"{found} = load i1, ptr {found_slot}")
+            if op == "not in":
+                nb = self.fresh()
+                self.emit(f"{nb} = xor i1 {found}, true")
+                found = nb
+            return found, BOOL
+        # `in` / `not in` on a string: substring search (or single char)
+        if op in ("in", "not in") and rt == STR:
+            # Use strstr (POSIX, available via <string.h>)
+            r = self.fresh()
+            self.emit(f"{r} = call ptr @strstr(ptr {rv}, ptr {lv})")
+            nonzero = self.fresh()
+            self.emit(f"{nonzero} = icmp ne ptr {r}, null")
+            if op == "not in":
+                nb = self.fresh()
+                self.emit(f"{nb} = xor i1 {nonzero}, true")
+                nonzero = nb
+            return nonzero, BOOL
+        # `in` / `not in` on a dict: check if the key exists
+        if op in ("in", "not in") and isinstance(rt, tuple) and rt[0] == "dict":
+            lstr = self.coerce(lv, lt, STR)
+            r = self.fresh()
+            self.emit(f"{r} = call i32 @py_dict_contains(ptr {rv}, ptr {lstr})")
+            b = self.fresh()
+            self.emit(f"{b} = icmp ne i32 {r}, 0")
+            if op == "not in":
+                nb = self.fresh()
+                self.emit(f"{nb} = xor i1 {b}, true")
+                b = nb
+            return b, BOOL
+        # `in` / `not in` on a tuple: linear scan (tuples are PyList at runtime)
+        if op in ("in", "not in") and is_tuple_type(rt):
+            # Same as list
+            lenr = self.fresh()
+            self.emit(f"{lenr} = call i64 @py_list_len(ptr {rv})")
+            et = list_elem_type(("list", rt[1][0] if rt[1] else NONE))
+            if et is None:
+                et = INT
+            i_slot = self.fresh()
+            self.insert_alloca(f"{i_slot} = alloca i64")
+            self.emit(f"store i64 0, ptr {i_slot}")
+            found_slot = self.fresh()
+            self.insert_alloca(f"{found_slot} = alloca i1")
+            self.emit(f"store i1 0, ptr {found_slot}")
+            cond = self.fresh_label("in.cond")
+            body = self.fresh_label("in.body")
+            end = self.fresh_label("in.end")
+            self.br(cond)
+            self.place_block(cond)
+            ci = self.fresh()
+            self.emit(f"{ci} = load i64, ptr {i_slot}")
+            cmp = self.fresh()
+            self.emit(f"{cmp} = icmp slt i64 {ci}, {lenr}")
+            self.cbr(cmp, body, end)
+            self.place_block(body)
+            ev = self._list_get_typed(rv, ci, et, line)
+            cv = self.gen_compare("==", lv, lt, ev, et, line)
+            cvi = self.fresh()
+            self.emit(f"{cvi} = zext i1 {cv} to i1")
+            cur = self.fresh()
+            self.emit(f"{cur} = load i1, ptr {found_slot}")
+            newf = self.fresh()
+            self.emit(f"{newf} = or i1 {cur}, {cvi}")
+            self.emit(f"store i1 {newf}, ptr {found_slot}")
+            ci2 = self.fresh()
+            self.emit(f"{ci2} = load i64, ptr {i_slot}")
+            nxt = self.fresh()
+            self.emit(f"{nxt} = add i64 {ci2}, 1")
+            self.emit(f"store i64 {nxt}, ptr {i_slot}")
+            self.br(cond)
+            self.place_block(end)
+            found = self.fresh()
+            self.emit(f"{found} = load i1, ptr {found_slot}")
+            if op == "not in":
+                nb = self.fresh()
+                self.emit(f"{nb} = xor i1 {found}, true")
+                found = nb
+            return found, BOOL
         if op == "+" and result_type == STR:
             return self._call("py_str_concat", [lv, rv], [STR, STR], STR), STR
         if op == "*" and result_type == STR:
@@ -2746,24 +3408,34 @@ class CodeGen:
         return name
 
     def gen_call(self, e):
+        # Handle module.method(args) calls
+        if isinstance(e.func, A.Attribute):
+            mc = A.MethodCall(e.func.obj, e.func.attr, e.args, e.line, kwargs=e.kwargs)
+            mc.type = getattr(e, 'type', None)
+            return self.gen_method_call(mc)
         if not isinstance(e.func, A.Name):
             raise CodeGenError("only direct calls supported", e.line)
         name = e.func.name
         # Resolve hoisted nested function calls via the enclosing chain.
         name = self._resolve_call_name(name)
-        # Lambdas are desugared to __lambda__ calls by the parser; not supported,
-        # return a null placeholder.
-        if name == "__lambda__":
-            return "null", STR
         # Object constructor: ClassName(args) -> py_object_new(class_id) + __init__
         if name in self.classes:
             return self.gen_constructor(name, e)
         if name in self.funcs:
             return self.gen_user_call(name, e)
+        # Check if it's a variable holding a function reference (e.g., lambda)
+        if name in self.locals:
+            vtype = self.locals[name][1]
+            if isinstance(vtype, tuple) and vtype[0] == "func":
+                fn_name = vtype[1]
+                if fn_name in self.funcs:
+                    return self.gen_user_call(fn_name, e)
         if name == "print":
             return self.gen_print(e)
         if name in ("len", "abs", "int", "float", "str", "bool", "input", "min", "max",
-                    "sum", "isinstance", "sorted", "range", "enumerate", "tuple", "set"):
+                    "sum", "isinstance", "sorted", "range", "enumerate", "tuple", "set",
+                    "hex", "oct", "bin", "chr", "ord", "round", "divmod", "repr",
+                    "reversed", "any", "all", "zip", "type", "id", "hash", "format"):
             return self.gen_builtin(name, e)
         # Runtime constructors referenced via imported name (from collections import Counter).
         if name == "Counter":
@@ -2774,6 +3446,17 @@ class CodeGen:
             r = self.fresh()
             self.emit(f"{r} = call ptr @py_list_new()")
             return r, ("obj", "deque")
+        # Exception type construction: Exception("msg"), ValueError("msg"), etc.
+        from semantic import EXCEPTION_TYPES
+        if name in EXCEPTION_TYPES:
+            if e.args:
+                v, t = self.gen_expr(e.args[0])
+                if t == STR:
+                    return v, STR
+                # Convert to string
+                v = self.coerce(v, t, STR)
+                return v, STR
+            return self.intern_string(""), STR
         raise CodeGenError(f"unknown function '{name}'", e.line)
 
     def gen_constructor(self, class_name, e):
@@ -2947,6 +3630,10 @@ class CodeGen:
                 r = self.fresh()
                 self.emit(f"{r} = call i64 @py_counter_len(ptr {v})")
                 return r, INT
+            if is_obj_type(t) and t[1] == "set":
+                r = self.fresh()
+                self.emit(f"{r} = call i64 @py_set_len(ptr {v})")
+                return r, INT
             v = self.coerce(v, t, STR)
             r = self.fresh()
             self.emit(f"{r} = call i64 @py_len(ptr {v})")
@@ -3031,14 +3718,21 @@ class CodeGen:
             et = list_elem_type(t) if is_list_type(t) else INT
             if et is None:
                 et = INT
-            if numeric_base(et) == FLOAT:
-                raise CodeGenError("sorted() on float list not supported", e.line)
             n = self.fresh()
             self.emit(f"{n} = call i64 @py_list_len(ptr {v})")
             copy = self.fresh()
-            self.emit(f"{copy} = call ptr @py_list_slice_int(ptr {v}, i64 0, i64 {n})")
-            self.emit(f"call void @py_list_sort_int(ptr {copy})")
-            return copy, ("list", INT)
+            if numeric_base(et) == FLOAT:
+                self.emit(f"{copy} = call ptr @py_list_slice_float(ptr {v}, i64 0, i64 {n})")
+                self.emit(f"call void @py_list_sort_float(ptr {copy})")
+                return copy, ("list", FLOAT)
+            elif et == STR:
+                self.emit(f"{copy} = call ptr @py_list_slice_str(ptr {v}, i64 0, i64 {n})")
+                self.emit(f"call void @py_list_sort_str(ptr {copy})")
+                return copy, ("list", STR)
+            else:
+                self.emit(f"{copy} = call ptr @py_list_slice_int(ptr {v}, i64 0, i64 {n})")
+                self.emit(f"call void @py_list_sort_int(ptr {copy})")
+                return copy, ("list", INT)
         if name == "isinstance":
             # Minimal stub: return False (not used meaningfully in supported programs).
             return "false", BOOL
@@ -3116,10 +3810,52 @@ class CodeGen:
         if name in ("min", "max"):
             return self.gen_minmax(name, args, e.line)
         if name == "set":
-            # set() -> empty list (sets are represented as lists).
             r = self.fresh()
-            self.emit(f"{r} = call ptr @py_list_new()")
-            return r, ("list", NONE)
+            self.emit(f"{r} = call ptr @py_set_new()")
+            return r, ("obj", "set")
+        if name == "hex":
+            v, t = self.gen_expr(args[0])
+            v = self.coerce(v, t, INT)
+            r = self.fresh()
+            self.emit(f"{r} = call ptr @py_hex(i64 {v})")
+            return r, STR
+        if name == "oct":
+            v, t = self.gen_expr(args[0])
+            v = self.coerce(v, t, INT)
+            r = self.fresh()
+            self.emit(f"{r} = call ptr @py_oct(i64 {v})")
+            return r, STR
+        if name == "bin":
+            v, t = self.gen_expr(args[0])
+            v = self.coerce(v, t, INT)
+            r = self.fresh()
+            self.emit(f"{r} = call ptr @py_bin(i64 {v})")
+            return r, STR
+        if name == "chr":
+            v, t = self.gen_expr(args[0])
+            v = self.coerce(v, t, INT)
+            r = self.fresh()
+            self.emit(f"{r} = call ptr @py_chr(i64 {v})")
+            return r, STR
+        if name == "ord":
+            v, t = self.gen_expr(args[0])
+            r = self.fresh()
+            self.emit(f"{r} = call i64 @py_ord(ptr {v})")
+            return r, INT
+        if name == "round":
+            v, t = self.gen_expr(args[0])
+            if t == FLOAT:
+                if len(args) > 1:
+                    n, nt = self.gen_expr(args[1])
+                    n = self.coerce(n, nt, INT)
+                    r = self.fresh()
+                    self.emit(f"{r} = call double @py_round(double {v}, i64 {n})")
+                    return r, FLOAT
+                else:
+                    r = self.fresh()
+                    self.emit(f"{r} = call i64 @py_round_int(double {v})")
+                    return r, INT
+            return v, t
         raise CodeGenError(f"builtin {name} not supported", e.line)
 
     def gen_minmax(self, name, args, line):

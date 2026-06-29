@@ -25,6 +25,8 @@ class Parser:
     def __init__(self, tokens):
         self.tokens = tokens
         self.i = 0
+        self._lambda_counter = 0
+        self._lambdas = []
 
     # --- helpers ---
     def peek(self, off=0):
@@ -67,6 +69,8 @@ class Parser:
         while not self.at(T.EOF):
             stmts.extend(self.parse_statement())
             self.skip_newlines()
+        # Add collected lambda functions at the top level
+        stmts = self._lambdas + stmts
         return stmts
 
     # --- statements ---
@@ -425,13 +429,32 @@ class Parser:
                 negate = True
             right = self.parse_additive()
             return A.IsOp(left, right, negate, t.line)
-        # Handle comparison operators (including chained: a < b < c)
+        # Handle comparison operators (including chained: a < b < c, 'in', 'not in')
         ops = []
         operands = [left]
-        while self.cur().type in (T.EQ, T.NEQ, T.LT, T.GT, T.LE, T.GE):
-            t = self.advance()
-            op_map = {T.EQ: "==", T.NEQ: "!=", T.LT: "<", T.GT: ">", T.LE: "<=", T.GE: ">="}
-            ops.append(op_map[t.type])
+        while True:
+            op = None
+            if self.cur().type in (T.EQ, T.NEQ, T.LT, T.GT, T.LE, T.GE):
+                t = self.advance()
+                op_map = {T.EQ: "==", T.NEQ: "!=", T.LT: "<", T.GT: ">", T.LE: "<=", T.GE: ">="}
+                op = op_map[t.type]
+            elif self.at_kw("in"):
+                t = self.advance()
+                op = "in"
+            elif self.at(T.NOT):
+                t = self.advance()
+                if self.at_kw("in"):
+                    self.advance()
+                    op = "not in"
+                else:
+                    # 'not' as unary not at this level: bail out
+                    # The 'not' token was consumed; we need to handle it as unary.
+                    # Wrap 'left' in UnaryOp("not", left) and continue parsing.
+                    operand = self.parse_comparison()
+                    return A.UnaryOp("not", operand, t.line)
+            if op is None:
+                break
+            ops.append(op)
             operands.append(self.parse_additive())
         if len(ops) == 0:
             return left
@@ -625,6 +648,10 @@ class Parser:
                 key = self.parse_expr()
                 self.expect(T.COLON, "':'")
                 val = self.parse_expr()
+                # Dict comprehension: {k: v for var in iter (if cond)*}
+                if self.at_kw("for"):
+                    var, iterable, conds = self._parse_comp_for_clauses(T.RBRACE)
+                    return A.DictComp(key, val, var, iterable, conds, t.line)
                 pairs.append((key, val))
                 while self.at(T.COMMA):
                     self.advance()
@@ -648,27 +675,37 @@ class Parser:
                 params.append(self.expect(T.IDENTIFIER).value)
         self.expect(T.COLON, "':'")
         body = self.parse_expr()
-        # Desugar lambda to a function call: we represent it as a special node
-        # For now, just parse it and return a Call to a builtin
-        return A.Call(A.Name("__lambda__", t.line), [body] + [A.StringLit(p, t.line) for p in params], t.line)
+        # Create a hidden function for the lambda
+        name = f"__lambda_{self._lambda_counter}"
+        self._lambda_counter += 1
+        func_def = A.FuncDef(name, params, [A.Return(body, t.line)], t.line)
+        self._lambdas.append(func_def)
+        # Return a reference to the function
+        return A.Name(name, t.line)
 
     def _parse_list_comp(self, element, line):
         """Parse the 'for var in iter (if cond)*' part of a list comprehension."""
+        var, iterable, conditions = self._parse_comp_for_clauses(T.RBRACKET)
+        return A.ListComp(element, var, iterable, conditions, line)
+
+    def _parse_comp_for_clauses(self, end_tok):
+        """Parse 'for var[, var2] in iterable (if cond)*' followed by end_tok.
+        Returns (var_list, iterable, conditions)."""
         self.expect_kw("for")
-        # loop variable(s)
         first = self.expect(T.IDENTIFIER).value
         var = [first]
         while self.at(T.COMMA):
             self.advance()
             var.append(self.expect(T.IDENTIFIER).value)
         self.expect_kw("in")
-        iterable = self.parse_or()  # use or_test (no ternary in comprehension iterable)
+        iterable = self.parse_or()
         conditions = []
         while self.at_kw("if"):
             self.advance()
             conditions.append(self.parse_or())
-        self.expect(T.RBRACKET, "']'")
-        return A.ListComp(element, var, iterable, conditions, line)
+        end_name = "']'" if end_tok == T.RBRACKET else "'}'"
+        self.expect(end_tok, end_name)
+        return var, iterable, conditions
 
     def _parse_fstring(self, content, line):
         """Parse f-string content into parts (literal strings and expressions)."""

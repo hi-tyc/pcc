@@ -21,7 +21,8 @@
 
 /* ---- string construction ---- */
 
-char *py_str_concat(const char *a, const char *b) {
+const char *py_str_empty(void) { return strdup(""); }
+const char *py_str_concat(const char *a, const char *b) {
     size_t la = strlen(a), lb = strlen(b);
     char *r = (char *)malloc(la + lb + 1);
     memcpy(r, a, la);
@@ -339,11 +340,22 @@ long py_list_index_int(PyList *l, long v) {
     for (long i = 0; i < l->length; i++) if (d[i] == v) return i;
     return -1;
 }
-
 long py_list_index_str(PyList *l, const char *v) {
     const char **d = (const char **)l->data;
     for (long i = 0; i < l->length; i++) if (strcmp(d[i], v) == 0) return i;
     return -1;
+}
+long py_list_count_int(PyList *l, long v) {
+    long *d = (long *)l->data;
+    long c = 0;
+    for (long i = 0; i < l->length; i++) if (d[i] == v) c++;
+    return c;
+}
+long py_list_count_str(PyList *l, const char *v) {
+    const char **d = (const char **)l->data;
+    long c = 0;
+    for (long i = 0; i < l->length; i++) if (strcmp(d[i], v) == 0) c++;
+    return c;
 }
 
 /* ---- list printing (generic, recursive for nested lists) ---- */
@@ -637,6 +649,122 @@ char *py_str_upper(const char *s) {
     return r;
 }
 
+char *py_str_replace(const char *s, const char *old, const char *newstr) {
+    size_t slen = strlen(s), olen = strlen(old);
+    if (olen == 0) return strdup(s);
+    /* Count occurrences */
+    size_t count = 0;
+    const char *p = s;
+    while ((p = strstr(p, old)) != NULL) { count++; p += olen; }
+    size_t nlen = strlen(newstr);
+    char *r = (char *)malloc(slen + count * (nlen > olen ? nlen - olen : 0) + 1);
+    char *out = r;
+    p = s;
+    while (1) {
+        const char *m = strstr(p, old);
+        if (!m) {
+            size_t rest = strlen(p);
+            memcpy(out, p, rest);
+            out += rest;
+            break;
+        }
+        size_t chunk = m - p;
+        memcpy(out, p, chunk);
+        out += chunk;
+        memcpy(out, newstr, nlen);
+        out += nlen;
+        p = m + olen;
+    }
+    *out = '\0';
+    return r;
+}
+
+int py_str_startswith(const char *s, const char *prefix) {
+    size_t sl = strlen(s), pl = strlen(prefix);
+    if (pl > sl) return 0;
+    return memcmp(s, prefix, pl) == 0;
+}
+
+int py_str_endswith(const char *s, const char *suffix) {
+    size_t sl = strlen(s), sufl = strlen(suffix);
+    if (sufl > sl) return 0;
+    return memcmp(s + sl - sufl, suffix, sufl) == 0;
+}
+
+long py_str_find(const char *s, const char *sub) {
+    const char *m = strstr(s, sub);
+    if (!m) return -1;
+    return (long)(m - s);
+}
+
+char *py_str_strip(const char *s);
+
+char *py_str_lstrip(const char *s) {
+    while (*s && isspace((unsigned char)*s)) s++;
+    return strdup(s);
+}
+
+char *py_str_rstrip(const char *s) {
+    size_t n = strlen(s);
+    while (n > 0 && isspace((unsigned char)s[n - 1])) n--;
+    char *r = (char *)malloc(n + 1);
+    memcpy(r, s, n);
+    r[n] = '\0';
+    return r;
+}
+
+char *py_str_strip(const char *s) {
+    return py_str_rstrip(py_str_lstrip(s));
+}
+
+PyList *py_str_split(const char *s, const char *delim) {
+    PyList *r = py_list_new();
+    py_list_set_kind(r, LE_STR);
+    size_t dlen = strlen(delim);
+    if (dlen == 0) {
+        py_list_append_str(r, s);
+        return r;
+    }
+    const char *p = s, *start = s;
+    while (1) {
+        const char *m = strstr(p, delim);
+        if (!m) {
+            size_t chunk = strlen(start);
+            char *piece = (char *)malloc(chunk + 1);
+            memcpy(piece, start, chunk);
+            piece[chunk] = '\0';
+            py_list_append_str(r, piece);
+            break;
+        }
+        size_t chunk = m - start;
+        char *piece = (char *)malloc(chunk + 1);
+        memcpy(piece, start, chunk);
+        piece[chunk] = '\0';
+        py_list_append_str(r, piece);
+        p = m + dlen;
+        start = p;
+    }
+    return r;
+}
+
+PyList *py_str_split_ws(const char *s) {
+    PyList *r = py_list_new();
+    py_list_set_kind(r, LE_STR);
+    const char *p = s;
+    while (*p) {
+        while (*p && isspace((unsigned char)*p)) p++;
+        if (!*p) break;
+        const char *start = p;
+        while (*p && !isspace((unsigned char)*p)) p++;
+        size_t chunk = p - start;
+        char *piece = (char *)malloc(chunk + 1);
+        memcpy(piece, start, chunk);
+        piece[chunk] = '\0';
+        py_list_append_str(r, piece);
+    }
+    return r;
+}
+
 /* ---- list sort (int, ascending, in place) ---- */
 static int cmp_long(const void *a, const void *b) {
     long la = *(const long *)a, lb = *(const long *)b;
@@ -645,6 +773,24 @@ static int cmp_long(const void *a, const void *b) {
 void py_list_sort_int(PyList *l) {
     if (l->length > 1)
         qsort(l->data, (size_t)l->length, sizeof(long), cmp_long);
+}
+
+static int cmp_double(const void *a, const void *b) {
+    double la = *(const double *)a, lb = *(const double *)b;
+    return (la > lb) - (la < lb);
+}
+void py_list_sort_float(PyList *l) {
+    if (l->length > 1)
+        qsort(l->data, (size_t)l->length, sizeof(double), cmp_double);
+}
+
+static int cmp_str(const void *a, const void *b) {
+    const char *sa = *(const char **)a, *sb = *(const char **)b;
+    return strcmp(sa, sb);
+}
+void py_list_sort_str(PyList *l) {
+    if (l->length > 1)
+        qsort(l->data, (size_t)l->length, sizeof(const char *), cmp_str);
 }
 
 /* ---- time ---- */
@@ -719,12 +865,13 @@ void py_event_wait(PyEvent *e) {
 }
 
 /* ---- thread-safe queue ---- */
-typedef struct {
+typedef struct PyQueue {
     pthread_mutex_t mutex;
     pthread_cond_t not_empty;
     pthread_cond_t not_full;
     PyList *items; /* stored as a list of void* */
     long maxsize;
+    long unfinished; /* tracks pending tasks for join() */
 } PyQueue;
 
 PyQueue *py_queue_new(long maxsize) {
@@ -735,6 +882,7 @@ PyQueue *py_queue_new(long maxsize) {
     q->items = py_list_new();
     q->items->elem_kind = LE_LIST; /* store void* as list ptrs */
     q->maxsize = maxsize;
+    q->unfinished = 0;
     return q;
 }
 void py_queue_put(PyQueue *q, void *item) {
@@ -742,6 +890,7 @@ void py_queue_put(PyQueue *q, void *item) {
     while (q->maxsize > 0 && q->items->length >= q->maxsize)
         pthread_cond_wait(&q->not_full, &q->mutex);
     py_list_append_list(q->items, (PyList *)item);
+    q->unfinished++;
     pthread_cond_signal(&q->not_empty);
     pthread_mutex_unlock(&q->mutex);
 }
@@ -768,8 +917,36 @@ void *py_queue_get(PyQueue *q, long timeout_sec) {
     pthread_mutex_unlock(&q->mutex);
     return item;
 }
+/* Box typed scalar values into a heap PyList (so they can be stored as ptr). */
+PyList *py_queue_box_int(long v) {
+    PyList *box = py_list_new();
+    py_list_append_int(box, v);
+    return box;
+}
+PyList *py_queue_box_float(double v) {
+    PyList *box = py_list_new();
+    py_list_append_float(box, v);
+    return box;
+}
+PyList *py_queue_box_str(const char *v) {
+    PyList *box = py_list_new();
+    py_list_append_str(box, v);
+    return box;
+}
 long py_queue_size(PyQueue *q) { return q->items->length; }
 int py_queue_empty(PyQueue *q) { return q->items->length == 0; }
+void py_queue_task_done(PyQueue *q) {
+    pthread_mutex_lock(&q->mutex);
+    if (q->unfinished > 0) q->unfinished--;
+    if (q->unfinished == 0) pthread_cond_broadcast(&q->not_empty);
+    pthread_mutex_unlock(&q->mutex);
+}
+void py_queue_join(PyQueue *q) {
+    pthread_mutex_lock(&q->mutex);
+    while (q->unfinished > 0)
+        pthread_cond_wait(&q->not_empty, &q->mutex);
+    pthread_mutex_unlock(&q->mutex);
+}
 
 /* ---- Counter (collections) ----
  * Represented as a PyObject (class_id 100) with two list attributes:
@@ -946,7 +1123,13 @@ static void parse_fmt_spec(const char *spec, char *align, int *width, int *prec,
     *align = 0; *width = 0; *prec = 0; *has_prec = 0; *type = 0;
     if (!spec || !spec[0]) return;
     if (spec[0] == ':') spec++;
-    if (spec[0] == '<' || spec[0] == '>') { *align = spec[0]; spec++; }
+    if (spec[0] == '<' || spec[0] == '>' || spec[0] == '=' || spec[0] == '^') { *align = spec[0]; spec++; }
+    /* fill char */
+    if (*spec && *spec != '0' && (*spec == '+' || *spec == '-' || *spec == ' ')) spec++;
+    /* alternate form (#) */
+    if (*spec == '#') spec++;
+    /* zero pad */
+    if (*spec == '0') spec++;
     /* width: leading digits */
     if (*spec >= '0' && *spec <= '9') {
         *width = atoi(spec);
@@ -960,14 +1143,51 @@ static void parse_fmt_spec(const char *spec, char *align, int *width, int *prec,
         while ((*spec >= '0' && *spec <= '9')) spec++;
     }
     /* type */
-    if (*spec == 'f' || *spec == 'd' || *spec == 's' || *spec == 'e' || *spec == 'g') *type = *spec;
+    if (*spec == 'f' || *spec == 'd' || *spec == 's' || *spec == 'e' || *spec == 'g'
+            || *spec == 'x' || *spec == 'X' || *spec == 'o' || *spec == 'b'
+            || *spec == 'n' || *spec == 'c' || *spec == '%') *type = *spec;
 }
 
 char *py_format_int(long val, const char *spec) {
-    char inner[64];
-    snprintf(inner, sizeof inner, "%ld", val);
     char align; int width, prec, has_prec; char type;
     parse_fmt_spec(spec, &align, &width, &prec, &has_prec, &type);
+    char inner[64];
+    int has_prefix = 0;
+    if (type == 'x' || type == 'X') {
+        unsigned long u = (unsigned long)val;
+        if (type == 'X') snprintf(inner, sizeof inner, "%lX", u);
+        else snprintf(inner, sizeof inner, "%lx", u);
+        /* Check for # prefix (alternate form) */
+        if (spec && strchr(spec, '#')) {
+            memmove(inner + 2, inner, strlen(inner) + 1);
+            inner[0] = '0';
+            inner[1] = (type == 'X') ? 'X' : 'x';
+            has_prefix = 1;
+        }
+    } else if (type == 'o') {
+        snprintf(inner, sizeof inner, "%lo", (unsigned long)val);
+        if (spec && strchr(spec, '#') && val != 0) {
+            memmove(inner + 1, inner, strlen(inner) + 1);
+            inner[0] = '0';
+            has_prefix = 1;
+        }
+    } else if (type == 'b') {
+        /* Binary format */
+        unsigned long u = (unsigned long)val;
+        char tmp[80]; int n = 0;
+        if (u == 0) tmp[n++] = '0';
+        while (u > 0) { tmp[n++] = '0' + (u & 1); u >>= 1; }
+        for (int i = 0; i < n; i++) inner[i] = tmp[n - 1 - i];
+        inner[n] = '\0';
+        if (spec && strchr(spec, '#')) {
+            memmove(inner + 2, inner, strlen(inner) + 1);
+            inner[0] = '0';
+            inner[1] = 'b';
+            has_prefix = 1;
+        }
+    } else {
+        snprintf(inner, sizeof inner, "%ld", val);
+    }
     int len = (int)strlen(inner);
     if (width <= len) return strdup(inner);
     char *buf = (char *)malloc(width + 1);
@@ -1022,4 +1242,573 @@ char *py_format_str(const char *val, const char *spec) {
     }
     buf[width] = '\0';
     return buf;
+}
+
+/* ---- Set support ---- */
+typedef struct {
+    PyList *items;  /* reuse PyList internally to store unique elements */
+} PySet;
+
+PySet *py_set_new(void) {
+    PySet *s = (PySet *)malloc(sizeof(PySet));
+    s->items = py_list_new();
+    return s;
+}
+
+void py_set_add_int(PySet *s, long val) {
+    long *d = (long *)s->items->data;
+    for (long i = 0; i < s->items->length; i++)
+        if (d[i] == val) return;
+    s->items->elem_kind = LE_INT;
+    py_list_append_int(s->items, val);
+}
+
+void py_set_add_str(PySet *s, const char *val) {
+    const char **d = (const char **)s->items->data;
+    for (long i = 0; i < s->items->length; i++)
+        if (strcmp(d[i], val) == 0) return;
+    s->items->elem_kind = LE_STR;
+    py_list_append_str(s->items, val);
+}
+
+int py_set_contains_int(PySet *s, long val) {
+    long *d = (long *)s->items->data;
+    for (long i = 0; i < s->items->length; i++)
+        if (d[i] == val) return 1;
+    return 0;
+}
+
+int py_set_contains_str(PySet *s, const char *val) {
+    const char **d = (const char **)s->items->data;
+    for (long i = 0; i < s->items->length; i++)
+        if (strcmp(d[i], val) == 0) return 1;
+    return 0;
+}
+
+long py_set_len(PySet *s) {
+    return s->items->length;
+}
+
+void py_set_remove_int(PySet *s, long val) {
+    long *d = (long *)s->items->data;
+    for (long i = 0; i < s->items->length; i++) {
+        if (d[i] == val) { py_list_pop_at_int(s->items, i); return; }
+    }
+}
+
+void py_set_remove_str(PySet *s, const char *val) {
+    for (long i = 0; i < s->items->length; i++) {
+        if (strcmp(((const char **)s->items->data)[i], val) == 0) {
+            py_list_pop_at_str(s->items, i);
+            return;
+        }
+    }
+}
+
+PyList *py_set_to_list_int(PySet *s) {
+    PyList *r = py_list_new();
+    py_list_set_kind(r, LE_INT);
+    long *d = (long *)s->items->data;
+    for (long i = 0; i < s->items->length; i++)
+        py_list_append_int(r, d[i]);
+    return r;
+}
+
+PyList *py_set_to_list_str(PySet *s) {
+    PyList *r = py_list_new();
+    py_list_set_kind(r, LE_STR);
+    const char **d = (const char **)s->items->data;
+    for (long i = 0; i < s->items->length; i++)
+        py_list_append_str(r, d[i]);
+    return r;
+}
+
+/* ---- Dict methods ----
+ * The current dict representation is a PyObject whose attr_names are the
+ * string keys. Iterate over attr_names to implement keys/values/items. */
+PyList *py_dict_keys(PyObject *dict) {
+    PyList *r = py_list_new();
+    py_list_set_kind(r, LE_STR);
+    for (int i = 0; i < dict->n_attrs; i++)
+        py_list_append_str(r, dict->attr_names[i]);
+    return r;
+}
+
+PyList *py_dict_values(PyObject *dict) {
+    PyList *r = py_list_new();
+    py_list_set_kind(r, LE_INT);
+    for (int i = 0; i < dict->n_attrs; i++)
+        py_list_append_int(r, dict->attr_values[i].i);
+    return r;
+}
+
+PyList *py_dict_items(PyObject *dict) {
+    PyList *r = py_list_new();
+    py_list_set_kind(r, LE_LIST);
+    for (int i = 0; i < dict->n_attrs; i++) {
+        PyList *pair = py_list_new();
+        py_list_append_str(pair, dict->attr_names[i]);
+        py_list_append_int(pair, dict->attr_values[i].i);
+        py_list_append_list(r, pair);
+    }
+    return r;
+}
+
+int py_dict_contains(PyObject *dict, const char *key) {
+    return py_object_find_attr(dict, key) >= 0;
+}
+
+long py_dict_get_int(PyObject *dict, const char *key, long defv) {
+    int idx = py_object_find_attr(dict, key);
+    if (idx < 0) return defv;
+    if (dict->attr_types[idx] == 0) return dict->attr_values[idx].i;
+    if (dict->attr_types[idx] == 3) return dict->attr_values[idx].b;
+    return defv;
+}
+
+double py_dict_get_float(PyObject *dict, const char *key, double defv) {
+    int idx = py_object_find_attr(dict, key);
+    if (idx < 0) return defv;
+    if (dict->attr_types[idx] == 1) return dict->attr_values[idx].f;
+    return defv;
+}
+
+const char *py_dict_get_str(PyObject *dict, const char *key, const char *defv) {
+    int idx = py_object_find_attr(dict, key);
+    if (idx < 0) return defv;
+    if (dict->attr_types[idx] == 2) return dict->attr_values[idx].s;
+    return defv;
+}
+
+PyObject *py_dict_get_obj(PyObject *dict, const char *key, PyObject *defv) {
+    int idx = py_object_find_attr(dict, key);
+    if (idx < 0) return defv;
+    if (dict->attr_types[idx] == 5) return dict->attr_values[idx].o;
+    return defv;
+}
+
+/* ---- Math module ---- */
+double py_math_sqrt(double x) { return sqrt(x); }
+double py_math_pow(double x, double y) { return pow(x, y); }
+double py_math_log(double x) { return log(x); }
+double py_math_log2(double x) { return log2(x); }
+double py_math_log10(double x) { return log10(x); }
+double py_math_sin(double x) { return sin(x); }
+double py_math_cos(double x) { return cos(x); }
+double py_math_tan(double x) { return tan(x); }
+double py_math_floor(double x) { return floor(x); }
+double py_math_ceil(double x) { return ceil(x); }
+double py_math_fabs(double x) { return fabs(x); }
+double py_math_exp(double x) { return exp(x); }
+
+long py_math_gcd(long a, long b) {
+    if (a < 0) a = -a;
+    if (b < 0) b = -b;
+    while (b != 0) {
+        long t = b;
+        b = a % b;
+        a = t;
+    }
+    return a;
+}
+
+long py_math_lcm(long a, long b) {
+    if (a == 0 || b == 0) return 0;
+    long g = py_math_gcd(a, b);
+    long aa = a < 0 ? -a : a;
+    long bb = b < 0 ? -b : b;
+    return aa / g * bb;
+}
+
+double py_math_pi(void) { return 3.14159265358979323846; }
+double py_math_e(void) { return 2.71828182845904523536; }
+double py_math_inf(void) { return INFINITY; }
+double py_math_nan(void) { return NAN; }
+
+/* ---- Exception handling ---- */
+#include <setjmp.h>
+
+#define MAX_EXC_MSG 256
+
+typedef struct {
+    int active;
+    char msg[MAX_EXC_MSG];
+    int kind;  /* 0=none, 1=Exception, 2=ValueError, 3=TypeError,
+                * 4=ZeroDivisionError, 5=KeyError, 6=IndexError,
+                * 7=FileNotFoundError, 8=StopIteration, 9=custom,
+                * 10=queue.Empty */
+} PyExceptionFrame;
+
+static PyExceptionFrame __exc_stack[256];
+static int __exc_sp = 0;
+
+void py_exc_push(void) {
+    if (__exc_sp < 256) {
+        __exc_stack[__exc_sp].active = 0;
+        __exc_stack[__exc_sp].kind = 0;
+        __exc_stack[__exc_sp].msg[0] = '\0';
+        __exc_sp++;
+    }
+}
+
+int py_exc_catch(void) {
+    /* returns 1 if exception caught, 0 if no exception */
+    if (__exc_sp > 0 && __exc_stack[__exc_sp - 1].active) return 1;
+    return 0;
+}
+
+void py_exc_pop(void) {
+    if (__exc_sp > 0) {
+        __exc_sp--;
+        __exc_stack[__exc_sp].active = 0;
+    }
+}
+
+const char *py_exc_msg(void) {
+    if (__exc_sp > 0) return __exc_stack[__exc_sp - 1].msg;
+    return "";
+}
+
+int py_exc_kind(void) {
+    if (__exc_sp > 0) return __exc_stack[__exc_sp - 1].kind;
+    return 0;
+}
+
+void py_exc_raise(int kind, const char *msg) {
+    if (__exc_sp > 0) {
+        PyExceptionFrame *f = &__exc_stack[__exc_sp - 1];
+        f->active = 1;
+        f->kind = kind;
+        if (msg) {
+            strncpy(f->msg, msg, MAX_EXC_MSG - 1);
+            f->msg[MAX_EXC_MSG - 1] = '\0';
+        } else {
+            f->msg[0] = '\0';
+        }
+        /* Flag-based: don't use longjmp. The codegen checks py_exc_catch()
+         * after each statement in the try body. */
+    } else {
+        fprintf(stderr, "Unhandled exception: %s\n", msg ? msg : "");
+        exit(1);
+    }
+}
+
+void py_exc_raise_value(const char *msg) { py_exc_raise(2, msg); }
+void py_exc_raise_type(const char *msg) { py_exc_raise(3, msg); }
+void py_exc_raise_zerodiv(const char *msg) { py_exc_raise(4, msg); }
+void py_exc_raise_key(const char *msg) { py_exc_raise(5, msg); }
+void py_exc_raise_index(const char *msg) { py_exc_raise(6, msg); }
+void py_exc_raise_stopiter(void) { py_exc_raise(8, ""); }
+
+/* ---- More string methods ---- */
+char *py_str_ljust(const char *s, long width, const char *fillchar) {
+    long len = (long)strlen(s);
+    if (len >= width) return strdup(s);
+    char fc = (fillchar && fillchar[0]) ? fillchar[0] : ' ';
+    char *r = (char *)malloc((size_t)width + 1);
+    memcpy(r, s, len);
+    for (long i = len; i < width; i++) r[i] = fc;
+    r[width] = '\0';
+    return r;
+}
+
+char *py_str_rjust(const char *s, long width, const char *fillchar) {
+    long len = (long)strlen(s);
+    if (len >= width) return strdup(s);
+    long pad = width - len;
+    char fc = (fillchar && fillchar[0]) ? fillchar[0] : ' ';
+    char *r = (char *)malloc((size_t)width + 1);
+    for (long i = 0; i < pad; i++) r[i] = fc;
+    memcpy(r + pad, s, len);
+    r[width] = '\0';
+    return r;
+}
+
+char *py_str_center(const char *s, long width, const char *fillchar) {
+    long len = (long)strlen(s);
+    if (len >= width) return strdup(s);
+    long total = width - len;
+    long left = total / 2;
+    long right = total - left;
+    char fc = (fillchar && fillchar[0]) ? fillchar[0] : ' ';
+    char *r = (char *)malloc((size_t)width + 1);
+    for (long i = 0; i < left; i++) r[i] = fc;
+    memcpy(r + left, s, len);
+    for (long i = 0; i < right; i++) r[left + len + i] = fc;
+    r[width] = '\0';
+    return r;
+}
+
+char *py_str_zfill(const char *s, long width) {
+    long len = (long)strlen(s);
+    if (len >= width) return strdup(s);
+    long pad = width - len;
+    char *r = (char *)malloc((size_t)width + 1);
+    if (len > 0 && (s[0] == '+' || s[0] == '-')) {
+        r[0] = s[0];
+        for (long i = 0; i < pad; i++) r[1 + i] = '0';
+        memcpy(r + 1 + pad, s + 1, len - 1);
+    } else {
+        for (long i = 0; i < pad; i++) r[i] = '0';
+        memcpy(r + pad, s, len);
+    }
+    r[width] = '\0';
+    return r;
+}
+
+char *py_str_title(const char *s) {
+    size_t n = strlen(s);
+    char *r = (char *)malloc(n + 1);
+    int prev_alpha = 0;
+    for (size_t i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)s[i];
+        if (isalpha(c)) {
+            r[i] = prev_alpha ? tolower(c) : toupper(c);
+            prev_alpha = 1;
+        } else {
+            r[i] = s[i];
+            prev_alpha = 0;
+        }
+    }
+    r[n] = '\0';
+    return r;
+}
+
+char *py_str_capitalize(const char *s) {
+    size_t n = strlen(s);
+    char *r = (char *)malloc(n + 1);
+    if (n == 0) { r[0] = '\0'; return r; }
+    r[0] = toupper((unsigned char)s[0]);
+    for (size_t i = 1; i < n; i++) r[i] = tolower((unsigned char)s[i]);
+    r[n] = '\0';
+    return r;
+}
+
+char *py_str_swapcase(const char *s) {
+    size_t n = strlen(s);
+    char *r = (char *)malloc(n + 1);
+    for (size_t i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)s[i];
+        if (isupper(c)) r[i] = tolower(c);
+        else if (islower(c)) r[i] = toupper(c);
+        else r[i] = s[i];
+    }
+    r[n] = '\0';
+    return r;
+}
+
+char *py_str_removeprefix(const char *s, const char *prefix) {
+    size_t lp = strlen(prefix);
+    if (strncmp(s, prefix, lp) == 0) {
+        size_t ls = strlen(s);
+        char *r = (char *)malloc(ls - lp + 1);
+        memcpy(r, s + lp, ls - lp);
+        r[ls - lp] = '\0';
+        return r;
+    }
+    return strdup(s);
+}
+
+char *py_str_removesuffix(const char *s, const char *suffix) {
+    size_t ls = strlen(s);
+    size_t lsf = strlen(suffix);
+    if (lsf <= ls && strcmp(s + ls - lsf, suffix) == 0) {
+        char *r = (char *)malloc(ls - lsf + 1);
+        memcpy(r, s, ls - lsf);
+        r[ls - lsf] = '\0';
+        return r;
+    }
+    return strdup(s);
+}
+
+char *py_str_repeat(const char *s, long n) {
+    /* same as py_str_mul */
+    return py_str_mul(s, n);
+}
+
+long py_str_count(const char *s, const char *sub) {
+    if (*sub == '\0') return (long)strlen(s) + 1;
+    long count = 0;
+    size_t lsub = strlen(sub);
+    const char *p = s;
+    while ((p = strstr(p, sub)) != NULL) {
+        count++;
+        p += lsub;
+    }
+    return count;
+}
+
+char *py_str_format_simple(const char *fmt, const char *val) {
+    /* simple {} substitution: replace all {} with val */
+    size_t lv = strlen(val);
+    size_t cap = strlen(fmt) + lv + 16;
+    char *r = (char *)malloc(cap);
+    size_t len = 0;
+    const char *p = fmt;
+    while (*p) {
+        if (p[0] == '{' && p[1] == '}') {
+            while (len + lv + 1 >= cap) { cap *= 2; r = realloc(r, cap); }
+            memcpy(r + len, val, lv); len += lv;
+            p += 2;
+        } else {
+            if (len + 2 >= cap) { cap *= 2; r = realloc(r, cap); }
+            r[len++] = *p++;
+        }
+    }
+    r[len] = '\0';
+    return r;
+}
+
+/* ---- More builtins ---- */
+char *py_hex(long n) {
+    char buf[32];
+    if (n >= 0) snprintf(buf, sizeof buf, "0x%lx", n);
+    else snprintf(buf, sizeof buf, "-0x%lx", -n);
+    return strdup(buf);
+}
+
+char *py_oct(long n) {
+    char buf[32];
+    if (n >= 0) snprintf(buf, sizeof buf, "0o%lo", n);
+    else snprintf(buf, sizeof buf, "-0o%lo", -n);
+    return strdup(buf);
+}
+
+char *py_bin(long n) {
+    if (n == 0) return strdup("0b0");
+    int neg = n < 0;
+    unsigned long u = neg ? (unsigned long)(-n) : (unsigned long)n;
+    char tmp[80];
+    int ti = 0;
+    while (u > 0) { tmp[ti++] = (char)('0' + (u & 1)); u >>= 1; }
+    int rlen = ti + 2 + (neg ? 1 : 0);
+    char *r = (char *)malloc((size_t)rlen + 1);
+    int ri = 0;
+    if (neg) r[ri++] = '-';
+    r[ri++] = '0'; r[ri++] = 'b';
+    for (int i = ti - 1; i >= 0; i--) r[ri++] = tmp[i];
+    r[ri] = '\0';
+    return r;
+}
+
+long py_ord(const char *s) {
+    /* first character's ASCII value */
+    if (!s || !*s) return 0;
+    return (long)(unsigned char)s[0];
+}
+
+char *py_chr(long n) {
+    char *r = (char *)malloc(2);
+    r[0] = (char)n;
+    r[1] = '\0';
+    return r;
+}
+
+double py_round(double x, long ndigits) {
+    double factor = pow(10.0, (double)ndigits);
+    double scaled = x * factor;
+    double rounded = (scaled >= 0) ? floor(scaled + 0.5) : ceil(scaled - 0.5);
+    return rounded / factor;
+}
+
+long py_round_int(double x) {
+    return (long)((x >= 0) ? floor(x + 0.5) : ceil(x - 0.5));
+}
+
+void py_divmod(long a, long b, long *q, long *r) {
+    *q = py_ifloordiv(a, b);
+    *r = py_imod(a, b);
+}
+
+/* ---- String module constants (as functions returning const char*) ---- */
+const char *py_string_ascii_letters(void) {
+    return "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+}
+const char *py_string_ascii_lowercase(void) { return "abcdefghijklmnopqrstuvwxyz"; }
+const char *py_string_ascii_uppercase(void) { return "ABCDEFGHIJKLMNOPQRSTUVWXYZ"; }
+const char *py_string_digits(void) { return "0123456789"; }
+const char *py_string_hexdigits(void) { return "0123456789abcdefABCDEF"; }
+const char *py_string_octdigits(void) { return "01234567"; }
+const char *py_string_punctuation(void) { return "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~"; }
+const char *py_string_whitespace(void) { return " \t\n\r\x0b\x0c"; }
+
+/* ---- Iterator support ---- */
+typedef struct {
+    PyList *list;
+    long index;
+    int kind;  /* 0=list, 1=string, 2=dict_keys, 3=dict_values, 4=dict_items, 5=set, 6=range */
+    const char *str;  /* for string iteration */
+    long range_start;
+    long range_stop;
+    long range_step;
+} PyIterator;
+
+PyIterator *py_iter_list(PyList *list) {
+    PyIterator *it = (PyIterator *)malloc(sizeof(PyIterator));
+    it->list = list;
+    it->index = 0;
+    it->kind = 0;
+    it->str = NULL;
+    it->range_start = 0; it->range_stop = 0; it->range_step = 1;
+    return it;
+}
+
+PyIterator *py_iter_str(const char *str) {
+    PyIterator *it = (PyIterator *)malloc(sizeof(PyIterator));
+    it->list = NULL;
+    it->index = 0;
+    it->kind = 1;
+    it->str = str;
+    it->range_start = 0; it->range_stop = 0; it->range_step = 1;
+    return it;
+}
+
+PyIterator *py_iter_range(long start, long stop, long step) {
+    PyIterator *it = (PyIterator *)malloc(sizeof(PyIterator));
+    it->list = NULL;
+    it->index = 0;
+    it->kind = 6;
+    it->str = NULL;
+    it->range_start = start;
+    it->range_stop = stop;
+    it->range_step = step;
+    return it;
+}
+
+int py_iter_has_next(PyIterator *it) {
+    switch (it->kind) {
+        case 0: return it->index < it->list->length;
+        case 1: return it->str[it->index] != '\0';
+        case 6:
+            if (it->range_step > 0) return it->range_start < it->range_stop;
+            if (it->range_step < 0) return it->range_start > it->range_stop;
+            return 0;
+    }
+    return 0;
+}
+
+long py_iter_next_int(PyIterator *it) {
+    switch (it->kind) {
+        case 0: return py_list_get_int(it->list, it->index++);
+        case 1: return (long)(unsigned char)it->str[it->index++];
+        case 6: {
+            long v = it->range_start;
+            it->range_start += it->range_step;
+            return v;
+        }
+    }
+    return 0;
+}
+
+const char *py_iter_next_str(PyIterator *it) {
+    switch (it->kind) {
+        case 0: return py_list_get_str(it->list, it->index++);
+        case 1: {
+            char *r = (char *)malloc(2);
+            r[0] = it->str[it->index++];
+            r[1] = '\0';
+            return r;
+        }
+    }
+    return "";
 }

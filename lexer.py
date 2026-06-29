@@ -209,7 +209,49 @@ class Lexer:
         start_line, start_col = self.line, self.col
         s = ""
         is_float = False
-        while self.pos < len(self.source) and (self.peek().isdigit() or self.peek() == "."):
+
+        # Hex/octal/binary integer literals: 0x, 0o, 0b (with optional underscores)
+        if self.peek() == "0":
+            nxt = self.peek(1)
+            if nxt in ("x", "X"):
+                self.advance(); self.advance()  # consume "0x"
+                digits = ""
+                while self.pos < len(self.source) and (self.peek().isdigit() or self.peek() in "abcdefABCDEF_"):
+                    ch = self.peek()
+                    if ch != "_":
+                        digits += ch
+                    self.advance()
+                if not digits:
+                    self.error("invalid hexadecimal literal")
+                self.tokens.append(Token(TokenType.INTEGER, int(digits, 16), start_line, start_col))
+                return
+            if nxt in ("o", "O"):
+                self.advance(); self.advance()  # consume "0o"
+                digits = ""
+                while self.pos < len(self.source) and self.peek() in "01234567_":
+                    ch = self.peek()
+                    if ch != "_":
+                        digits += ch
+                    self.advance()
+                if not digits:
+                    self.error("invalid octal literal")
+                self.tokens.append(Token(TokenType.INTEGER, int(digits, 8), start_line, start_col))
+                return
+            if nxt in ("b", "B"):
+                self.advance(); self.advance()  # consume "0b"
+                digits = ""
+                while self.pos < len(self.source) and self.peek() in "01_":
+                    ch = self.peek()
+                    if ch != "_":
+                        digits += ch
+                    self.advance()
+                if not digits:
+                    self.error("invalid binary literal")
+                self.tokens.append(Token(TokenType.INTEGER, int(digits, 2), start_line, start_col))
+                return
+
+        # Decimal integer or float (with optional underscore separators)
+        while self.pos < len(self.source) and (self.peek().isdigit() or self.peek() == "." or self.peek() == "_"):
             ch = self.peek()
             if ch == ".":
                 if is_float:
@@ -225,8 +267,13 @@ class Lexer:
             s += self.advance()
             if self.peek() in ("+", "-"):
                 s += self.advance()
-            while self.pos < len(self.source) and self.peek().isdigit():
-                s += self.advance()
+            while self.pos < len(self.source) and (self.peek().isdigit() or self.peek() == "_"):
+                ch = self.peek()
+                if ch != "_":
+                    s += ch
+                self.advance()
+        # Strip underscore separators before numeric conversion
+        s = s.replace("_", "")
         if is_float:
             self.tokens.append(Token(TokenType.FLOAT, float(s), start_line, start_col))
         else:
@@ -360,7 +407,8 @@ class Lexer:
 
         if three == "**=":
             self.advance(); self.advance(); self.advance()
-            self.tokens.append(Token(TokenType.STAR, "**", start_line, start_col))
+            self.tokens.append(Token(TokenType.DOUBLE_STAR, "**", start_line, start_col))
+            self.tokens.append(Token(TokenType.ASSIGN, "=", start_line, start_col + 2))
             return
         if two == "**":
             self.advance(); self.advance()

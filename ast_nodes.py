@@ -181,6 +181,17 @@ class ListComp(Node):
         self.conditions = conditions  # list of 'if' expressions (and-ed)
 
 
+class DictComp(Node):
+    """Dict comprehension: {key_expr: val_expr for var in iterable (if cond)*}"""
+    def __init__(self, key_expr, val_expr, var, iterable, conditions, line=0):
+        super().__init__(line)
+        self.key_expr = key_expr
+        self.val_expr = val_expr
+        self.var = var
+        self.iterable = iterable
+        self.conditions = conditions
+
+
 # ---------- Statements ----------
 
 class ExprStmt(Node):

@@ -25,6 +25,25 @@ class SemanticError(Exception):
 
 # Type constants
 INT, FLOAT, STR, BOOL, NONE, VOID = "int", "float", "str", "bool", "none", "void"
+SET = "set"
+
+EXCEPTION_TYPES = {
+    "Exception", "ValueError", "TypeError", "KeyError",
+    "IndexError", "ZeroDivisionError", "StopIteration",
+    "FileNotFoundError", "RuntimeError", "NotImplementedError",
+    "ArithmeticError", "OverflowError", "FloatingPointError",
+    "AttributeError", "NameError", "UnboundLocalError",
+    "ImportError", "ModuleNotFoundError", "OSError",
+    "IOError", "PermissionError", "TimeoutError",
+    "RecursionError", "AssertionError", "KeyboardInterrupt",
+    "SystemExit", "GeneratorExit", "StopAsyncIteration",
+    "Warning", "UserWarning", "DeprecationWarning",
+    "PendingDeprecationWarning", "SyntaxWarning",
+    "RuntimeWarning", "FutureWarning", "ImportWarning",
+    "UnicodeWarning", "BytesWarning", "ResourceWarning",
+    "LookupError", "EnvironmentError", "EOFError",
+    "MemoryError", "ReferenceError",
+}
 
 BUILTINS = {
     "print": None,        # returns none
@@ -49,6 +68,32 @@ BUILTINS = {
     "tuple": None,
     "deque": None,        # from collections; returns ("obj", "deque")
     "Counter": None,      # from collections; returns ("obj", "Counter")
+    "hex": STR,
+    "oct": STR,
+    "bin": STR,
+    "chr": STR,
+    "ord": INT,
+    "round": None,      # returns int or float depending on args
+    "divmod": None,     # returns tuple
+    "iter": None,       # iterator
+    "next": None,       # next value
+    "repr": STR,
+    "ascii": STR,
+    "format": STR,
+    "reversed": None,
+    "any": BOOL,
+    "all": BOOL,
+    "zip": None,
+    "hasattr": BOOL,
+    "getattr": None,
+    "setattr": NONE,
+    "callable": BOOL,
+    "type": STR,        # simplified: returns type name string
+    "id": INT,
+    "hash": INT,
+    "open": ("obj", "File"),
+    "math": None,       # module reference
+    "string": None,     # module reference
     "__lambda__": STR,    # desugared lambda; opaque to analysis
 }
 
@@ -758,6 +803,8 @@ class Analyzer:
             return t  # iterating over a tuple yields its elements (the tuple itself when unpacking)
         if isinstance(t, tuple) and t[0] == "dict":
             return t[1]  # iterating over a dict yields keys
+        if isinstance(t, tuple) and t[0] == "set":
+            return t[1]  # element type
         if t is None or t == NONE:
             # Unknown iterable type; yield unknown elements.
             return NONE
@@ -819,6 +866,8 @@ class Analyzer:
                 return ("class", e.name)
             if e.name in BUILTINS:
                 return ("builtin", e.name)
+            if e.name in EXCEPTION_TYPES:
+                return ("obj", e.name)
             if strict:
                 raise SemanticError(f"undefined name '{e.name}'", e.line)
             return None
@@ -860,6 +909,28 @@ class Analyzer:
                     return FLOAT if FLOAT in (tt, et) else INT
                 raise SemanticError(f"ternary branches have different types {tt} vs {et}", e.line)
             return tt
+        # Exception construction: Exception("msg"), ValueError("msg"), etc.
+        if isinstance(e, A.Call) and isinstance(e.func, A.Name):
+            exc_types = {"Exception", "ValueError", "TypeError", "KeyError",
+                         "IndexError", "ZeroDivisionError", "StopIteration",
+                         "FileNotFoundError", "RuntimeError", "NotImplementedError",
+                         "ArithmeticError", "OverflowError", "FloatingPointError",
+                         "AttributeError", "NameError", "UnboundLocalError",
+                         "ImportError", "ModuleNotFoundError", "OSError",
+                         "IOError", "PermissionError", "TimeoutError",
+                         "RecursionError", "AssertionError", "KeyboardInterrupt",
+                         "SystemExit", "GeneratorExit", "StopAsyncIteration",
+                         "Warning", "UserWarning", "DeprecationWarning",
+                         "PendingDeprecationWarning", "SyntaxWarning",
+                         "RuntimeWarning", "FutureWarning", "ImportWarning",
+                         "UnicodeWarning", "BytesWarning", "ResourceWarning"}
+            if e.func.name in exc_types:
+                return ("obj", e.func.name)
+        if isinstance(e, A.Call) and isinstance(e.func, A.Name) and e.func.name == "__lambda__":
+            # Lambda: return type of body
+            if e.args:
+                return self._expr(e.args[0], scope, strict)
+            return NONE
         if isinstance(e, A.Call):
             return self._call_type(e, scope, strict)
         if isinstance(e, A.ListLit):
@@ -968,6 +1039,8 @@ class Analyzer:
             return self._expr(e.value, scope, strict)
         if isinstance(e, A.ListComp):
             return self._listcomp_type(e, scope, strict)
+        if isinstance(e, A.DictComp):
+            return self._dictcomp_type(e, scope, strict)
         raise SemanticError(f"unhandled expression {type(e).__name__}", e.line)
 
     def _attr_type(self, e, scope, strict):
@@ -1012,6 +1085,19 @@ class Analyzer:
         # Evaluate the element expression to get the list's element type.
         et = self._expr(e.element, child_scope, strict)
         return ("list", et if et is not None else NONE)
+
+    def _dictcomp_type(self, e, scope, strict):
+        """Handle {k_expr: v_expr for var in iterable (if cond)*}."""
+        iter_t = self._for_var_type(e.iterable, scope, strict)
+        child_scope = dict(scope)
+        self._define_for_var(e.var, iter_t, child_scope, e.line, is_global_scope=False)
+        for cond in e.conditions:
+            self._expr(cond, child_scope, strict)
+        # Key and value types
+        kt = self._expr(e.key_expr, child_scope, strict)
+        vt = self._expr(e.val_expr, child_scope, strict)
+        # Dict type: ("dict", key_t, val_t) - 3-tuple
+        return ("dict", kt if kt is not None else STR, vt if vt is not None else NONE)
 
     def _method_call_type(self, e, scope, strict):
         ot = self._expr(e.obj, scope, strict)
@@ -1059,6 +1145,10 @@ class Analyzer:
         # Methods on lists.
         if isinstance(ot, tuple) and ot[0] == "list":
             return self._list_method_type(ot, e, arg_types, scope, strict)
+        if isinstance(ot, tuple) and ot[0] == "set":
+            return self._runtime_obj_method_type("set", e, arg_types, strict)
+        if isinstance(ot, tuple) and ot[0] == "dict":
+            return self._runtime_obj_method_type("dict", e, arg_types, strict, dict_type=ot)
         if ot == NONE:
             return None
         if strict:
@@ -1096,7 +1186,7 @@ class Analyzer:
         # Runtime class.
         return self._runtime_obj_method_type(class_name, e, arg_types, strict)
 
-    def _runtime_obj_method_type(self, class_name, e, arg_types, strict):
+    def _runtime_obj_method_type(self, class_name, e, arg_types, strict, dict_type=None):
         """Method call on a runtime object (Counter, Thread, Lock, Event, Queue, deque)."""
         m = e.method
         if class_name == "Counter":
@@ -1128,9 +1218,12 @@ class Analyzer:
                 return BOOL
             return None
         if class_name == "Queue":
-            if m in ("put", "task_done"):
+            if m in ("put", "task_done", "join"):
                 return NONE
             if m == "get":
+                # Return a generic "any" type that the semantic analyzer
+                # will refine based on usage. Defaults to STR for backward
+                # compatibility.
                 return STR
             if m in ("empty",):
                 return BOOL
@@ -1142,6 +1235,33 @@ class Analyzer:
                 return NONE
             if m in ("pop", "popleft"):
                 return arg_types[0] if arg_types else None
+            return None
+        if class_name == "set":
+            if m in ("add", "remove", "discard", "clear", "update"):
+                return NONE
+            if m in ("contains", "issubset", "issuperset", "isdisjoint"):
+                return BOOL
+            if m in ("union", "intersection", "difference", "symmetric_difference", "copy"):
+                return ("obj", "set")
+            if m == "pop":
+                return NONE
+            return None
+        if class_name == "dict":
+            if m == "keys":
+                return ("list", STR)
+            if m == "values":
+                return ("list", NONE)
+            if m == "items":
+                return ("list", ("tuple", [STR, NONE]))
+            if m in ("get", "setdefault"):
+                # Return the dict's value type (ot[2])
+                if dict_type is not None and len(dict_type) >= 3:
+                    return dict_type[2]
+                return NONE
+            if m in ("update", "clear", "pop"):
+                return NONE
+            if m == "copy":
+                return ("dict", STR, NONE)
             return None
         return None
 
@@ -1229,10 +1349,71 @@ class Analyzer:
             if m == "as_completed":
                 return ("list", NONE)
             return None
+        if mod_name == "math":
+            if m in ("sqrt", "log", "log2", "log10", "sin", "cos", "tan",
+                     "asin", "acos", "atan", "atan2", "sinh", "cosh", "tanh",
+                     "exp", "floor", "ceil", "fabs", "copysign", "fmod",
+                     "pow", "hypot", "degrees", "radians", "gamma", "lgamma",
+                     "erf", "erfc", "expm1", "log1p", "trunc"):
+                return FLOAT
+            if m in ("gcd", "lcm", "factorial", "isclose", "isfinite",
+                     "isinf", "isnan"):
+                if m in ("isfinite", "isinf", "isnan", "isclose"):
+                    return BOOL
+                return INT
+            if m in ("pi", "e", "tau", "inf", "nan"):
+                return FLOAT
+            return None
+        if mod_name == "string":
+            if m in ("ascii_letters", "ascii_lowercase", "ascii_uppercase",
+                     "digits", "hexdigits", "octdigits", "punctuation",
+                     "whitespace", "printable"):
+                return STR
+            return None
+        if mod_name == "os":
+            if m in ("getcwd", "listdir", "getenv", "path"):
+                return STR
+            if m in ("mkdir", "rmdir", "remove", "rename", "chmod", "chdir", "system"):
+                return NONE
+            return None
+        if mod_name == "sys":
+            if m in ("argv", "path", "platform", "version", "maxsize"):
+                return STR
+            if m in ("exit",):
+                return NONE
+            return None
+        if mod_name == "json":
+            if m in ("dumps", "dump"):
+                return STR
+            if m in ("loads", "load"):
+                return NONE
+            return None
+        if mod_name == "itertools":
+            if m in ("chain", "cycle", "islice", "count", "repeat",
+                     "starmap", "takewhile", "dropwhile", "filterfalse",
+                     "groupby", "accumulate", "product", "permutations",
+                     "combinations", "combinations_with_replacement"):
+                return ("list", NONE)
+            return None
+        if mod_name == "functools":
+            if m in ("reduce", "lru_cache", "partial", "wraps", "cache"):
+                return NONE
+            return None
         # Imported name like "collections.deque" stored as ("module", "collections.deque").
         if "." in mod_name:
             top = mod_name.split(".")[-1]
             return self._module_method_call_type(top, e, arg_types, scope, strict)
+        # User module: check if the method name exists as a function
+        fn_name = e.method
+        if fn_name in self.funcs:
+            fn = self.funcs[fn_name]
+            for i, (p, at) in enumerate(zip(fn.params, arg_types)):
+                if i < len(fn.param_types):
+                    if fn.param_types[i] is None or fn.param_types[i] == NONE:
+                        if at and at != NONE:
+                            fn.param_types[i] = at
+                            self.changed = True
+            return fn.return_type
         return None
 
     def _str_method_type(self, m, arg_types, strict, line):
@@ -1249,6 +1430,14 @@ class Analyzer:
                  "isspace", "islower", "isupper", "isnumeric", "isdecimal",
                  "isidentifier", "isprintable", "istitle"):
             return BOOL
+        if m == "encode":
+            return STR
+        if m in ("partition", "rpartition"):
+            return ("tuple", [STR, STR, STR])
+        if m == "maketrans":
+            return NONE
+        if m == "translate":
+            return STR
         if strict:
             raise SemanticError(f"unknown string method '{m}'", line)
         return None
@@ -1373,7 +1562,7 @@ class Analyzer:
             if isinstance(rt, tuple) and rt[0] == "tuple" and numeric_base(lt) == INT:
                 return rt
         # Comparisons -> bool
-        if op in ("==", "!=", "<", ">", "<=", ">="):
+        if op in ("==", "!=", "<", ">", "<=", ">=", "in", "not in"):
             return BOOL
         # Arithmetic
         if op in ("+", "-", "*", "/", "//", "%", "**"):
@@ -1478,6 +1667,22 @@ class Analyzer:
             return fn.return_type
         if name in BUILTINS:
             return self._builtin_type(name, e, arg_types, strict)
+        # Check if it's a variable holding a function reference (e.g., lambda)
+        var_t = scope.get(name)
+        if var_t is None:
+            var_t = self.global_types.get(name)
+        if isinstance(var_t, tuple) and var_t[0] == "func":
+            fn_name = var_t[1]
+            if fn_name in self.funcs:
+                fn = self.funcs[fn_name]
+                for i, (p, at) in enumerate(zip(fn.params, arg_types)):
+                    if at is None or at == NONE:
+                        continue
+                    if i < len(fn.param_types):
+                        if fn.param_types[i] is None or fn.param_types[i] == NONE:
+                            fn.param_types[i] = at
+                            self.changed = True
+                return fn.return_type
         if strict:
             raise SemanticError(f"call to undefined function '{name}'", e.line)
         return None
@@ -1522,7 +1727,7 @@ class Analyzer:
             if strict and len(arg_types) != 1:
                 raise SemanticError("len() expects a single argument", e.line)
             if strict and arg_types and arg_types[0] is not None and \
-                    arg_types[0] != STR and not (isinstance(arg_types[0], tuple) and arg_types[0][0] in ("list", "tuple", "dict", "obj")):
+                    arg_types[0] != STR and not (isinstance(arg_types[0], tuple) and arg_types[0][0] in ("list", "tuple", "dict", "set", "obj")):
                 raise SemanticError("len() expects a string, list, tuple, or dict argument", e.line)
             return INT
         if name == "abs":
@@ -1577,10 +1782,7 @@ class Analyzer:
         if name == "isinstance":
             return BOOL
         if name == "set":
-            # Treat set as a list for type purposes (supports add/append, len, etc.).
-            if arg_types and isinstance(arg_types[0], tuple) and arg_types[0][0] == "list":
-                return arg_types[0]
-            return ("list", NONE)
+            return ("obj", "set")
         if name == "dict":
             if arg_types and isinstance(arg_types[0], tuple) and arg_types[0][0] == "dict":
                 return arg_types[0]
@@ -1595,6 +1797,38 @@ class Analyzer:
             return ("obj", name)
         if name == "__lambda__":
             return STR
+        if name == "hex" or name == "oct" or name == "bin" or name == "chr":
+            return STR
+        if name == "ord":
+            return INT
+        if name == "round":
+            if arg_types:
+                if arg_types[0] == FLOAT:
+                    if len(arg_types) > 1 and arg_types[1] == INT:
+                        return FLOAT
+                    return INT
+                return arg_types[0]
+            return FLOAT
+        if name == "divmod":
+            return ("tuple", [INT, INT])
+        if name == "repr" or name == "ascii" or name == "format":
+            return STR
+        if name == "any" or name == "all":
+            return BOOL
+        if name == "reversed":
+            if arg_types and isinstance(arg_types[0], tuple) and arg_types[0][0] == "list":
+                return arg_types[0]
+            return ("list", NONE)
+        if name == "zip":
+            return ("list", ("tuple", [NONE]))
+        if name == "id" or name == "hash":
+            return INT
+        if name == "callable" or name == "hasattr":
+            return BOOL
+        if name == "type":
+            return STR
+        if name == "open":
+            return ("obj", "File")
         return None
 
 
