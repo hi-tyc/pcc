@@ -14,7 +14,7 @@ Inference is monomorphic: a function must be called with consistent
 argument types throughout the program.
 """
 
-import ast_nodes as A
+from . import ast_nodes as A
 
 
 class SemanticError(Exception):
@@ -716,8 +716,11 @@ class Analyzer:
         if isinstance(s, A.Import):
             name = s.alias if s.alias else s.module
             top = s.module.split(".")[0]
-            # In embed mode, non-stdlib modules are PyObject* (route A).
-            if self.embed_mode and top not in KNOWN_STDLIB:
+            # In embed mode, ALL imports are PyObject* (route A) — the value
+            # is already a fully-resolved Python object after the import
+            # statement executes. This makes all module/function lookups
+            # route through libpython.
+            if self.embed_mode:
                 self._define(name, PYOBJECT, scope, s.line, is_global_scope)
             else:
                 # Use just the top-level module name for the type.

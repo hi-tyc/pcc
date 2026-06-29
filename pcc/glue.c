@@ -356,6 +356,23 @@ void py_object_setitem(PyObject *obj, PyObject *key, PyObject *value) {
     }
 }
 
+/* ====== real Python dict helpers (embed mode) ====== */
+PyObject *py_dict_new(void) {
+    return PyDict_New();
+}
+void py_dict_setitem(PyObject *dict, PyObject *key, PyObject *value) {
+    if (!dict || !key) return;
+    if (PyDict_SetItem(dict, key, value) < 0) {
+        PyErr_Print();
+    }
+}
+
+/* ====== string incref (embed mode: convert PyStr -> PyObject) ====== */
+PyObject *py_str_incref(const char *s) {
+    if (!s) return NULL;
+    return PyUnicode_FromString(s);
+}
+
 /* ====== run source ====== */
 int py_run_string(const char *src) {
     return PyRun_SimpleString(src ? src : "");

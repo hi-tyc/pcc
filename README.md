@@ -1,431 +1,355 @@
-# PCC - Python-to-C-to-Executable Compiler
+# pcc — Python-to-Native Compiler
 
-[![Version](https://img.shields.io/badge/version-0.2.0-blue.svg)](https://github.com/yourusername/pcc)
-[![Python](https://img.shields.io/badge/python-3.10+-green.svg)](https://www.python.org/)
+[![Version](https://img.shields.io/badge/version-0.3.0-blue.svg)](https://github.com/hi-tyc/pcc)
+[![Python](https://img.shields.io/badge/python-3.8+-green.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
 
-PCC is a Python-to-C-to-Executable compiler that translates a subset of Python into C code and compiles it to native executables. It features arbitrary-precision integer arithmetic (BigInt), string operations, control flow, and function support.
+`pcc` (Python Compiler Collection) is a from-scratch Python → LLVM IR → native
+executable compiler. It translates Python source code into optimized LLVM IR,
+runs the standard LLVM optimization pipeline, and links it with a small
+built-in runtime library (and `libpython` for hybrid mode) to produce a
+**standalone native executable**.
 
-## Table of Contents
+It implements the **A+B hybrid strategy** for maximum space-time efficiency
+and 100% Python compatibility:
 
-- [Features](#features)
-- [Project Structure](#project-structure)
-- [Installation](#installation)
-- [Usage](#usage)
-- [Supported Python Subset](#supported-python-subset)
-- [Examples](#examples)
-- [Architecture](#architecture)
-- [Development](#development)
-- [Testing](#testing)
-- [Troubleshooting](#troubleshooting)
-- [Contributing](#contributing)
-- [License](#license)
+- **Route B (pure AOT)** — compiles your Python directly to LLVM IR and
+  links with a small built-in runtime. Produces the smallest, fastest
+  binaries. Works for our supported subset.
 
-## Features
+- **Route A (embed libpython)** — links against the system's `libpython`
+  and falls back to the CPython interpreter for unsupported features
+  (`numpy`, `requests`, C extensions, anything pip-installed, …). Gives
+  **100% Python compatibility**.
 
-- **Arbitrary-Precision Integers**: Support for integers of any size with no overflow
-- **String Operations**: String literals, variables, and concatenation
-- **Control Flow**: if/else, while loops, for-range loops, break, continue
-- **Functions**: Define and call functions with support for recursion
-- **Type Safety**: Compile-time type checking
-- **Cross-Platform**: Supports Windows (MSVC, clang-cl) and Linux/macOS (GCC)
-- **Clean C Output**: Generates readable, structured C code
+The compiler **auto-detects** the right route per program: known-stdlib-only
+code goes through native mode; pip-installed C extensions and other unknown
+modules trigger embed mode automatically. You can also force a route with
+`--native` or `--embed`.
 
-## Project Structure
+## Quick Start
 
-```
-pcc/
-├── pcc/                      # Main Python package
-│   ├── __init__.py          # Package initialization
-│   ├── __main__.py          # Entry point for `python -m pcc`
-│   ├── cli.py               # Command-line interface
-│   ├── ir/                  # Intermediate Representation
-│   │   ├── __init__.py
-│   │   └── nodes.py         # IR node definitions
-│   ├── core/                # Core compiler components
-│   │   ├── __init__.py
-│   │   ├── parser.py        # Python AST to IR parser
-│   │   └── compiler.py      # Main compiler orchestration
-│   ├── backend/             # Code generation
-│   │   ├── __init__.py
-│   │   └── codegen.py       # C code generator
-│   └── utils/               # Utility modules
-│       ├── __init__.py
-│       ├── toolchain.py     # Toolchain detection
-│       └── settings.py      # Configuration settings
-├── runtime/                 # C runtime library
-│   ├── runtime.h            # Main runtime header
-│   ├── rt_config.h          # Configuration and platform detection
-│   ├── rt_error.h/.c        # Error handling
-│   ├── rt_string.h/.c       # String operations
-│   └── rt_bigint.h/.c       # BigInt operations
-├── tests/                   # Test suite
-│   ├── unit/                # Unit tests
-│   ├── integration/         # Integration tests
-│   ├── e2e/                 # End-to-end tests
-│   └── fixtures/            # Test fixtures
-├── scripts/                 # Build scripts
-│   ├── build.ps1           # PowerShell build script
-│   └── run_tests.ps1       # Test runner script
-├── README.md               # This file
-└── .gitignore
-```
-
-## Installation
-
-### Prerequisites
-
-- Python 3.10 or higher
-- A C compiler:
-  - **Windows**: Visual Studio Build Tools (cl.exe) or LLVM (clang-cl)
-  - **Linux/macOS**: GCC or Clang
-
-### Install Python Dependencies
+### Install from PyPI (or local checkout)
 
 ```bash
-pip install pytest  # For running tests
+# from a local clone
+pip install .
+
+# or directly from the source dir
+PYTHONPATH=. python -m pcc ...
 ```
 
-### Install C Compilers
+### Compile your first program
 
-#### Windows - MSVC (Recommended)
+Create `hello.py`:
 
-```powershell
-winget install -e --id Microsoft.VisualStudio.2022.BuildTools
+```python
+import json
+data = {"hello": "world", "n": 42}
+print(json.dumps(data))
 ```
 
-After installation, use "Developer PowerShell for VS 2022" or ensure `cl.exe` is in your PATH.
-
-#### Windows - LLVM (Alternative)
-
-```powershell
-winget install -e --id LLVM.LLVM
-winget install -e --id Microsoft.WindowsSDK.11
-```
-
-#### Linux
+Then compile and run it:
 
 ```bash
-sudo apt-get install gcc
+$ pcc hello.py -o hello
+[1/5] Lexical analysis...
+[2/5] Syntax parsing...
+[2.5/5] Resolving imports...
+[3/5] Semantic analysis & type inference...
+[4/5] LLVM IR generation...
+[5/5] Optimization & linking...
+Build succeeded: hello
+
+$ ./hello
+{"hello": "world", "n": 42}
 ```
 
-#### macOS
-
-```bash
-xcode-select --install
-```
+The output `hello` is a single self-contained executable. No Python
+interpreter required at runtime — except for embed-mode programs, which
+use `libpython3` for parts the native compiler doesn't know about.
 
 ## Usage
 
-### Command Line
+```
+pcc <source.py> [-o OUTPUT] [-O LEVEL] [--run] [--emit-ir] [--no-opt]
+    [--embed | --native | --auto (default)]
+```
 
-Build a Python file to an executable:
+| Flag | Meaning |
+|---|---|
+| `-o OUTPUT` | Output executable path (default: source basename) |
+| `-O {0,1,2,3}` | LLVM optimization level (default: 2) |
+| `--run` | Run the executable after building |
+| `--emit-ir` | Keep the generated `.ll` / `.opt.ll` files for inspection |
+| `--no-opt` | Skip the LLVM optimization pipeline |
+| `--embed` | Force embed mode (route A) — link with `libpython` for 100% Python compatibility |
+| `--native` | Force native mode (route B) — small/fast, but only works for our supported subset |
+| `--auto` | **Default.** Auto-pick the right mode based on imports; if native mode fails, automatically fall back to embed mode |
+
+Equivalent invocation as a module:
 
 ```bash
-python -m pcc build input.py -o output.exe
+python -m pcc <source.py> ...
 ```
-
-Options:
-- `-o, --output`: Output executable path (required)
-- `--toolchain`: Compiler to use (`auto`, `msvc`, `clang-cl`, `gcc`)
-- `--emit-c-only`: Only generate C code, skip compilation
-- `-v, --verbose`: Enable verbose output
-
-### Examples
-
-```bash
-# Basic build
-python -m pcc build example.py -o example.exe
-
-# Specify toolchain
-python -m pcc build example.py -o example.exe --toolchain msvc
-
-# Only generate C code
-python -m pcc build example.py -o example.exe --emit-c-only
-
-# Show version
-python -m pcc version
-```
-
-### Python API
-
-```python
-from pcc import Compiler
-
-compiler = Compiler()
-
-# Build to executable
-result = compiler.build(
-    input_py=Path("input.py"),
-    out_exe=Path("output.exe"),
-    toolchain="auto"
-)
-
-if result.success:
-    print(f"Built: {result.executable_path}")
-else:
-    print(f"Error: {result.error_message}")
-
-# Or use individual steps
-ir = compiler.parse("print(1 + 2)")
-c_source = compiler.generate_c(ir)
-print(c_source.c_source)
-```
-
-## Supported Python Subset
-
-### Data Types
-
-- **Integers**: Arbitrary precision (BigInt)
-  - Operations: `+`, `-`, `*`, `//`, `%`
-  - Comparisons: `==`, `!=`, `<`, `<=`, `>`, `>=`
-- **Strings**: Literals, variables, concatenation (`+`)
-- **Lists (M2 subset)**: List literals `[...]` of integers, `len(list)`, `list.append(x)`, indexing `list[i]` (supports negative indices)
-- **Dictionaries (M2 subset)**: Dict literals `{ "k": v }` with string keys and integer values, `len(dict)`, indexing `dict[key]`
-- **Booleans**: Result of comparisons (0/1 integers)
-
-### Statements
-
-- `x = expr` - Variable assignment
-- `print(expr)` - Print expression
-- `return expr` - Return from function
-- Expression statements (function calls)
-
-### Control Flow
-
-- `if condition:` / `else:` - Conditional execution
-- `while condition:` - While loop
-- `for i in range(start, stop, step):` - For-range loop
-- `break` - Exit loop
-- `continue` - Skip to next iteration
-
-### Functions
-
-```python
-def function_name(param1, param2):
-    # function body
-    return expression
-```
-
-### Limitations
-
-- No `//` or `%` in expressions (only in statements)
-- No `int + str` or `str + int` mixing
-- No string comparison
-- No classes or tuples
-- List/dict support is currently limited (see "Lists (M2 subset)" / "Dictionaries (M2 subset)" above)
-- No exception handling, imports, or decorators
-- No keyword arguments
 
 ## Examples
 
-### Basic Arithmetic
+### Native mode (small, fast)
 
 ```python
-# BigInt arithmetic
-a = 100000000000000000000
-b = 99999999999999999999
-print(a + b)  # 199999999999999999999
-```
-
-### String Operations
-
-```python
-s = "hello"
-t = "world"
-print(s + " " + t)  # hello world
-```
-
-### Control Flow
-
-```python
-x = 10
-if x > 5:
-    print("big")
-else:
-    print("small")
-
-for i in range(5):
-    print(i)
-
-n = 5
-while n > 0:
-    print(n)
-    n = n - 1
-```
-
-### Functions and Recursion
-
-```python
+# fact.py
 def factorial(n):
     if n <= 1:
         return 1
-    else:
-        return n * factorial(n - 1)
+    return n * factorial(n - 1)
 
-print(factorial(5))  # 120
+print(factorial(20))
 ```
+
+```bash
+$ pcc fact.py -o fact --run
+[auto] no non-stdlib imports -> native mode (route B)
+2432902008176640000
+```
+
+### Embed mode (any Python)
+
+```python
+# numpy_demo.py
+import numpy as np
+a = np.array([[1, 2], [3, 4]])
+b = np.array([[5, 6], [7, 8]])
+print(a.dot(b))
+print(np.sum(a))
+```
+
+```bash
+$ pcc numpy_demo.py -o numpy_demo --run
+[auto] non-stdlib imports detected -> embed mode (route A+B)
+[[19 22]
+ [43 50]]
+10
+```
+
+### Mixed: native + embed auto-fallback
+
+```python
+# mixed.py
+import json              # stdlib - native handling
+import numpy as np       # pip C extension - falls back to embed
+
+data = json.loads('{"numbers": [1, 2, 3, 4, 5]}')
+arr = np.array(data["numbers"])
+print("sum:", int(arr.sum()))
+print("mean:", float(arr.mean()))
+```
+
+```bash
+$ pcc mixed.py -o mixed --run
+[auto] non-stdlib imports detected -> embed mode (route A+B)
+sum: 15
+mean: 3.0
+```
+
+### Local file imports (auto-inlined)
+
+```
+project/
+├── main.py
+└── math_utils.py
+```
+
+```python
+# math_utils.py
+def add(a, b): return a + b
+def mul(a, b): return a * b
+PI = 3.14159
+```
+
+```python
+# main.py
+from math_utils import add, mul, PI
+print("PI =", PI)
+print("3 + 4 =", add(3, 4))
+print("5 * 6 =", mul(5, 6))
+```
+
+```bash
+$ pcc main.py -o main --run
+[auto] no non-stdlib imports -> native mode (route B)
+PI = 3.14159
+3 + 4 = 7
+5 * 6 = 30
+```
+
+The compiler automatically inlines `math_utils.py` into the final binary —
+no runtime import needed.
 
 ## Architecture
 
-PCC follows a traditional compiler architecture:
-
-1. **Parsing**: Python source → AST → IR (Intermediate Representation)
-2. **Code Generation**: IR → C source code
-3. **Compilation**: C source → Native executable
-
-### Intermediate Representation (IR)
-
-The IR is a simplified AST that represents the supported Python subset:
-
-- **Expressions**: `IntConst`, `StrConst`, `Var`, `BinOp`, `CmpOp`, `Call`
-- **Statements**: `Assign`, `Print`, `If`, `While`, `ForRange`, `Return`, `Break`, `Continue`
-- **Module-level**: `FunctionDef`, `ModuleIR`
-
-### Runtime Library
-
-The C runtime provides:
-
-- **BigInt (`rt_int`)**: Arbitrary-precision integer arithmetic
-- **String (`rt_str`)**: String operations with proper memory management
-- **Error Handling**: Structured error codes and messages
-
-## Development
-
-### Running Tests
-
-```bash
-# Run all tests
-pytest
-
-# Run with coverage
-pytest --cov=pcc --cov-report=html
-
-# Run specific test file
-pytest tests/unit/test_parser.py
-
-# Run with verbose output
-pytest -v
+```
+            ┌────────────────────────────┐
+source.py ─►│  1. Lexer    (lexer.py)    │ tokens
+            │  2. Parser   (parser.py)   │ AST
+            │  3. Semantic (semantic.py) │ typed AST + import resolution
+            │  4. Codegen  (codegen.py)  │ LLVM IR (.ll)
+            │  5. opt + clang            │ native executable
+            └────────────────────────────┘
 ```
 
-### Project Setup for Development
+### Mode A — embed libpython (100% Python compatible)
+
+The `glue.c` file provides a thin bridge between native LLVM IR and the
+CPython interpreter:
+
+- `py_embed_init(argc, argv)` — initialise the embedded interpreter
+- `py_fallback_import("numpy")` — load a module
+- `py_fallback_getattr(obj, "sum")` — read an attribute
+- `py_call_method(obj, "sum", args, nargs)` — call a method
+- `py_object_to_int / _float / _str` — unbox a Python value
+- `py_int_to_pyobject / _float / _str` — box a native value
+
+This lets native IR call into libpython at the precise points where
+otherwise unknown features are needed. The result is **one process, one
+binary**, with native code on the hot paths and libpython as the safety
+net for the rest.
+
+### Mode B — pure AOT (smallest, fastest)
+
+Linked with `runtime.c` (a small self-contained C runtime that supplies
+PyList, PyStr, PyDict, and basic operations) plus the LLVM optimizer
+(`opt -passes=default<O2>`). The resulting binary has no Python
+interpreter dependency and is typically a few hundred KB.
+
+## Supported Python Features (Native mode)
+
+### Data types
+- `int`, `float`, `bool`, `str`, `None`
+- `list[T]`, `tuple`, `dict[str, V]`, `set`
+- F-strings with format spec
+
+### Statements
+- `if / elif / else`
+- `while`, `for ... in range / list / str / enumerate / zip / dict`
+- `break`, `continue`
+- `try / except / finally / raise`
+- `with`
+- `def` (with closures, default args, `*args`, `**kwargs`)
+- `class` (single inheritance, methods, `__init__`)
+
+### Expressions
+- All arithmetic and comparison operators
+- Chained comparisons (`a < b < c`)
+- Ternary `x if cond else y`
+- List / dict / set comprehensions
+- Generator expressions
+- Lambda
+- Slicing
+- `and / or / not` short-circuit
+- Walrus `:=`
+
+### Stdlib (native, inlined)
+- `random`, `math`, `re`, `time`, `datetime`, `os`, `sys`, `json`
+- `itertools`, `functools`, `collections` (deque, Counter)
+- `queue`, `threading`, `concurrent.futures`
+- `string`, `struct`, `heapq`, `bisect`, `operator`
+- `pathlib`, `shutil`, `glob`, `subprocess`
+- `csv`, `base64`, `hashlib`, `secrets`
+- `textwrap`, `pprint`, `unicodedata`, `codecs`
+- `argparse`, `logging`, `warnings`, `traceback`
+- And more — see [KNOWN_STDLIB](pcc/__main__.py)
+
+### Anything else
+- Pip-installed C extensions (`numpy`, `pandas`, `requests`, …)
+- User modules not in our stdlib whitelist
+- …automatically fall back to embed mode.
+
+## Installation Details
+
+### Prerequisites
+
+- **Python 3.8+**
+- **LLVM** (`opt` and `clang` in `$PATH`; LLVM 14+ recommended)
+- **libpython** development headers (only required for embed mode)
+  - Debian/Ubuntu: `sudo apt install libpython3-dev`
+  - Fedora: `sudo dnf install python3-devel`
+  - macOS: included with the python.org installer
+
+### Build from source
 
 ```bash
-# Clone the repository
-git clone https://github.com/yourusername/pcc.git
+git clone https://github.com/hi-tyc/pcc.git
 cd pcc
-
-# Install development dependencies
-pip install pytest pytest-cov
-
-# Run tests to verify setup
-pytest
+pip install .
 ```
 
-### Code Style
+This installs the `pcc` command-line tool.
 
-- Python: Follow PEP 8
-- C: Follow Linux kernel style (tabs, 80-column limit)
-- All code should have docstrings/comments
+### Verify the install
 
-## Testing
-
-The test suite includes:
-
-- **Unit Tests** (`tests/unit/`): Test individual components
-  - `test_ir.py`: IR node tests
-  - `test_parser.py`: Parser tests
-  - `test_codegen.py`: Code generator tests
-
-- **Integration Tests** (`tests/integration/`): Test component interactions
-
-- **End-to-End Tests** (`tests/e2e/`): Test full compilation pipeline
-
-- **Test Fixtures** (`tests/fixtures/`): Sample Python files for testing
-
-### Test Coverage
-
-Target: 85%+ code coverage
-
-Current coverage can be checked with:
 ```bash
-pytest --cov=pcc --cov-report=term-missing
+$ pcc --help
+usage: pcc [-h] [-o OUTPUT] [-O {0,1,2,3}] [--run] [--emit-ir] [--no-opt]
+           [--embed] [--native] [--auto]
+           source
 ```
 
-## Troubleshooting
+## Python API
 
-### "cl.exe not found" (Windows)
+```python
+import pcc
+from pathlib import Path
 
-Open "Developer PowerShell for VS 2022" or run:
-```powershell
-& "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat"
+from pcc.__main__ import compile_source
+
+# Equivalent to `pcc myscript.py -o myexe`
+out = compile_source(
+    source=Path("myscript.py").read_text(),
+    source_name="myscript.py",
+    out_exec="myexe",
+    opt_level=2,
+    embed_mode=False,  # set True to force embed mode
+)
+print("Built:", out)
 ```
 
-### "No supported compiler found"
+## Limitations
 
-Install a C compiler:
-- Windows: Visual Studio Build Tools or LLVM
-- Linux: `sudo apt-get install gcc`
-- macOS: `xcode-select --install`
+- Native mode is monomorphic: a function must be called with consistent
+  argument types throughout the program. Use embed mode for polymorphic
+  code (most real-world Python).
+- Embed mode binaries need `libpython3` available at runtime; on most
+  systems it's preinstalled, and the binary's RPATH points to it.
 
-### Generated C code won't compile
+## Project Layout
 
-Check that the runtime library is in the include path:
-```bash
-# Runtime should be at runtime/runtime.h
-ls runtime/runtime.h
 ```
-
-### Parse errors
-
-Ensure your Python code uses only the supported subset. See [Supported Python Subset](#supported-python-subset).
-
-## Contributing
-
-Contributions are welcome! Please follow these guidelines:
-
-1. **Fork** the repository
-2. **Create** a feature branch (`git checkout -b feature/amazing-feature`)
-3. **Commit** your changes (`git commit -m 'Add amazing feature'`)
-4. **Push** to the branch (`git push origin feature/amazing-feature`)
-5. **Open** a Pull Request
-
-### Coding Standards
-
-- Write tests for new features
-- Maintain 85%+ test coverage
-- Update documentation for API changes
-- Follow existing code style
-
-### Reporting Issues
-
-Please include:
-- Python version
-- Operating system
-- Compiler version
-- Minimal code to reproduce the issue
-- Error messages
+pcc/
+├── pcc/                       # Python package
+│   ├── __init__.py            # version
+│   ├── __main__.py            # `python -m pcc` entry point + compiler logic
+│   ├── cli.py                 # `pcc` console script entry
+│   ├── lexer.py               # tokenizer
+│   ├── tokens.py              # token types
+│   ├── parser.py              # parser -> AST
+│   ├── ast_nodes.py           # AST node definitions
+│   ├── semantic.py            # type inference + import resolution
+│   ├── codegen.py             # AST -> LLVM IR
+│   ├── runtime.c              # native AOT runtime (Route B)
+│   └── glue.c                 # libpython bridge (Route A)
+├── samples/                   # example programs
+│   ├── basic.py               # simple native example
+│   ├── test_features.py       # exhaustive native feature coverage
+│   ├── hybrid_test.py         # numpy + native mixing
+│   └── hybrid_complex.py      # larger numpy example
+├── setup.py                   # legacy setup
+├── pyproject.toml             # modern build config (PEP 517)
+├── MANIFEST.in                # include C sources in sdist
+├── LICENSE                    # MIT
+└── README.md                  # you are here
+```
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
-
-## Acknowledgments
-
-- Authors: @hi_tyc, @hi_zcy
-- Inspired by Python's simplicity and C's performance
-- BigInt implementation based on base-10^9 limb representation
-
-## Roadmap
-
-- [ ] Float support
-- [ ] List/dict support
-- [ ] Exception handling
-- [ ] Module imports
-- [ ] Optimization passes
-- [ ] LLVM backend option
-- [ ] WebAssembly target
-
----
-
-**Note**: This is an MVP (Minimum Viable Product) implementation. The supported Python subset is intentionally limited for simplicity and performance.
+MIT — see [LICENSE](LICENSE).

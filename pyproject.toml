@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pcc"
+version = "0.3.0"
+description = "Python-to-native compiler: compile .py to a standalone executable via LLVM."
+readme = "README.md"
+license = {file = "LICENSE"}
+requires-python = ">=3.8"
+authors = [
+    {name = "hi-tyc", email = "hi-tyc@users.github.com"},
+]
+keywords = ["compiler", "python", "llvm", "aot", "native", "executable"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Compilers",
+]
+dependencies = []
+
+[project.scripts]
+pcc = "pcc.cli:cli"
+
+[project.urls]
+Homepage = "https://github.com/hi-tyc/pcc"
+Repository = "https://github.com/hi-tyc/pcc/tree/features/tyc"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.package-data]
+pcc = ["*.c"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["pcc*"]

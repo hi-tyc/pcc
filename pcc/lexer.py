@@ -4,7 +4,7 @@ Handles indentation (INDENT/DEDENT tokens), string escapes, numeric
 literals (int/float), comments, and line continuation inside brackets.
 """
 
-from tokens import Token, TokenType, KEYWORDS
+from .tokens import Token, TokenType, KEYWORDS
 
 
 class LexError(Exception):

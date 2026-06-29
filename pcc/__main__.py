@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""pycompiler - a from-scratch Python -> LLVM -> executable compiler.
+"""pcc - Python-to-C-to-Executable Compiler.
 
 Pipeline:
     source.py
@@ -11,7 +11,8 @@ Pipeline:
       -> [clang]      link with runtime.c -> native executable
 
 Usage:
-    pycompiler.py <source.py> [-o OUTPUT] [--run] [--emit-ir] [--no-opt] [-O LEVEL]
+    python -m pcc <source.py> [-o OUTPUT] [--run] [--emit-ir] [--no-opt] [-O LEVEL]
+    pcc <source.py> [-o OUTPUT] ...
 """
 
 import argparse
@@ -20,21 +21,22 @@ import subprocess
 import sys
 import tempfile
 
-from lexer import Lexer, LexError
-from parser import parse, ParseError
-from semantic import analyze, SemanticError
-from codegen import generate, CodeGenError
+from .lexer import Lexer, LexError
+from .parser import parse, ParseError
+from .semantic import analyze, SemanticError
+from .codegen import generate, CodeGenError
+from . import ast_nodes as A
 
-import ast_nodes as A
 
-
+# Locate package resources (runtime.c, glue.c) regardless of install method.
+# __file__ may live inside site-packages/.../pcc/__main__.py after pip install.
 COMPILER_DIR = os.path.dirname(os.path.abspath(__file__))
 RUNTIME_C = os.path.join(COMPILER_DIR, "runtime.c")
 GLUE_C = os.path.join(COMPILER_DIR, "glue.c")
 
-# Default location of the system libpython (anaconda3 in this environment).
-DEFAULT_PYTHON_INC = "/home/tyc/anaconda3/include/python3.7m"
-DEFAULT_PYTHON_LIB = "/home/tyc/anaconda3/lib"
+# Default location of the system libpython. Detected at runtime; these are fallbacks.
+DEFAULT_PYTHON_INC = "/usr/include/python3.11"
+DEFAULT_PYTHON_LIB = "/usr/lib"
 
 
 class CompileError(Exception):
@@ -54,6 +56,45 @@ def find_tool(names):
         except FileNotFoundError:
             continue
     return None
+
+
+def _detect_libpython():
+    """Locate the active Python's include dir, lib dir, and libpython name.
+
+    Returns (include_dir, lib_dir, libpython_basename). The basename is
+    e.g. "python3.11" so it can be passed to -l.
+    """
+    import sysconfig
+    py_inc = sysconfig.get_paths().get("include") or DEFAULT_PYTHON_INC
+    py_libdirs = sysconfig.get_paths().get("stdlib", "").rsplit("/lib/", 1)
+    if len(py_libdirs) == 2:
+        py_lib = py_libdirs[0] + "/lib"
+    else:
+        py_lib = DEFAULT_PYTHON_LIB
+    # Find the libpython file
+    ver = "%d.%d" % sys.version_info[:2]
+    candidates = [
+        f"python{ver}m",     # e.g. python3.11m
+        f"python{ver}",      # e.g. python3.11
+    ]
+    # If the user explicitly sets PYLIBNAME, honor that.
+    forced = os.environ.get("PYLIBNAME")
+    if forced:
+        candidates = [forced] + candidates
+    for name in candidates:
+        if os.path.exists(os.path.join(py_lib, f"lib{name}.so")):
+            return py_inc, py_lib, name
+    # Fall back to whatever clang/python-config says.
+    try:
+        out = subprocess.run(["python3-config", "--ldflags"],
+                              capture_output=True, text=True, check=False)
+        for tok in out.stdout.split():
+            if tok.startswith("-l") and tok[2:].startswith("python"):
+                name = tok[2:]
+                return py_inc, py_lib, name
+    except FileNotFoundError:
+        pass
+    return py_inc, py_lib, f"python{ver}"
 
 
 def _needs_embed_mode(source, source_dir=None):
@@ -531,8 +572,7 @@ def compile_source(source, source_name, out_exec, opt_level=2, emit_ir=False, no
         # Hybrid A+B mode: link with libpython + glue.c
         if not os.path.exists(GLUE_C):
             raise CompileError(f"glue.c not found: {GLUE_C}")
-        py_inc = os.environ.get("PYINC", DEFAULT_PYTHON_INC)
-        py_lib = os.environ.get("PYLIB", DEFAULT_PYTHON_LIB)
+        py_inc, py_lib, py_libname = _detect_libpython()
         # Build glue.c as a .o to avoid name collisions with our runtime.c
         glue_o = out_exec + ".glue.o"
         run([clang, "-fPIC", "-O2", "-c", GLUE_C, f"-I{py_inc}", "-o", glue_o])
@@ -540,9 +580,9 @@ def compile_source(source, source_name, out_exec, opt_level=2, emit_ir=False, no
         link_cmd = [
             clang, f"-O{opt_level}",
             link_input, RUNTIME_C, glue_o,
-            f"-L{py_lib}", "-lpython3.7m",
+            f"-L{py_lib}", f"-l{py_libname}",
             f"-Wl,-rpath,{py_lib}",
-            "-o", out_exec, "-lm", "-lpthread",
+            "-o", out_exec, "-lm", "-lpthread", "-ldl",
         ]
     run(link_cmd)
     log(f"      executable -> {out_exec}")
@@ -595,8 +635,11 @@ def smart_compile(source, source_name, out_exec, opt_level=2, emit_ir=False,
 
 def main():
     ap = argparse.ArgumentParser(
-        prog="pycompiler",
-        description="Compile a subset of Python to a native executable via LLVM.")
+        prog="pcc",
+        description="pcc — Python-to-native compiler. Compiles a Python source file "
+                    "to a standalone native executable using LLVM IR and clang. "
+                    "Auto-detects whether to use pure-AOT (route B) or hybrid-with-"
+                    "libpython (route A) compilation based on the program's imports.")
     ap.add_argument("source", help="Python source file to compile")
     ap.add_argument("-o", "--output", help="output executable path")
     ap.add_argument("-O", dest="opt_level", type=int, default=2,
@@ -639,6 +682,7 @@ def main():
         # unsupported feature that libpython can handle, automatically retry
         # in embed mode. This implements the "max 100% compatibility"
         # requirement: when in doubt, fall back to the slower-but-complete path.
+        source_dir = os.path.dirname(os.path.abspath(args.source))
         if force_embed:
             compile_source(source, args.source, out_exec,
                            opt_level=args.opt_level, emit_ir=args.emit_ir,
@@ -654,23 +698,19 @@ def main():
                               opt_level=args.opt_level, emit_ir=args.emit_ir,
                               no_opt=args.no_opt)
             except CompileError as e:
-                err = str(e)
-                # If native failed because the program needs features we don't
-                # have natively (e.g. numpy, requests), automatically retry in
-                # embed mode for full Python compatibility.
-                if _needs_embed_mode(source, source_dir=source_dir):
-                    log(f"[auto] native compile failed ({err.splitlines()[0] if err else 'unknown'}); "
-                        "retrying in embed mode (route A)")
-                    # Clean up partial outputs.
-                    for ext in (".ll", ".opt.ll", ".glue.o"):
-                        p = out_exec + ext
-                        if os.path.exists(p):
-                            os.remove(p)
-                    compile_source(source, args.source, out_exec,
-                                   opt_level=args.opt_level, emit_ir=args.emit_ir,
-                                   no_opt=args.no_opt, embed_mode=True)
-                else:
-                    raise
+                # Native route failed — but we always have a path to 100% compat
+                # via embed mode. So retry in embed mode for any failure.
+                err = str(e).splitlines()[0] if str(e) else "unknown"
+                log(f"[auto] native compile failed ({err}); "
+                    "retrying in embed mode (route A) for 100% Python compatibility")
+                # Clean up partial outputs.
+                for ext in (".ll", ".opt.ll", ".glue.o"):
+                    p = out_exec + ext
+                    if os.path.exists(p):
+                        os.remove(p)
+                compile_source(source, args.source, out_exec,
+                               opt_level=args.opt_level, emit_ir=args.emit_ir,
+                               no_opt=args.no_opt, embed_mode=True)
     except CompileError as e:
         sys.stderr.write(f"\nCompilation failed:\n{e}\n")
         return 1

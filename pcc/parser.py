@@ -10,9 +10,9 @@ Expressions follow standard precedence (ternary > or > and > not >
 comparison > add/sub > mul/div/floordiv/mod > unary > power > call/atom).
 """
 
-from tokens import TokenType as T
-from lexer import LexError
-import ast_nodes as A
+from .tokens import TokenType as T
+from .lexer import LexError
+from . import ast_nodes as A
 
 
 class ParseError(Exception):

@@ -13,8 +13,8 @@ can read them. Function-local names become `alloca` slots.
 """
 
 import struct
-import ast_nodes as A
-from semantic import INT, FLOAT, STR, BOOL, NONE
+from . import ast_nodes as A
+from .semantic import INT, FLOAT, STR, BOOL, NONE
 
 
 class CodeGenError(Exception):
@@ -310,6 +310,9 @@ declare void @py_object_setitem(ptr, ptr, ptr)
 declare ptr @py_list_int_to_pylist(ptr)
 declare ptr @py_list_str_to_pylist(ptr)
 declare ptr @py_object_to_list(ptr)
+declare ptr @py_dict_new()
+declare void @py_dict_setitem(ptr, ptr, ptr)
+declare ptr @py_str_incref(ptr)
 """
 
 
@@ -774,13 +777,20 @@ class CodeGen:
         return slot_name
 
     def gen_import(self, s):
-        """`import X` or `import X as Y`. In embed mode, non-stdlib modules
-        are loaded via libpython and stored as PyObject* globals."""
+        """`import X` or `import X as Y`.
+
+        Native mode (route B): known stdlib modules are no-ops; their
+        method/attribute paths are inlined in the codegen. Other modules
+        are rejected by the semantic analyzer.
+
+        Embed mode (route A): every import is loaded by libpython and
+        stored as a PyObject* global. This gives 100% Python compatibility
+        for any module — stdlib, third-party, or pip-installed C extension.
+        """
         top = s.module.split(".")[0]
         target = s.alias if s.alias else top
-        if not self.embed_mode or self._is_stdlib_module(s.module):
-            # Native path: just register a no-op slot (the stdlib native code
-            # will handle it). For native non-stdlib, we error out at semantic.
+        if not self.embed_mode:
+            # Native path: stdlib modules are handled by inlined codegen.
             return
         # Allocate a global slot for the PyObject*.
         slot = self._alloc_pyobj_global(target)
@@ -1403,7 +1413,13 @@ class CodeGen:
         raise CodeGenError(f"unhandled expression {type(e).__name__}", e.line)
 
     def gen_dict_lit(self, e):
-        """Dict literal: {k: v, ...} -> PyObject with string-keyed attributes."""
+        """Dict literal: {k: v, ...}.
+
+        Native mode: our custom PyObject with string-keyed attributes.
+        Embed mode: a real Python dict, so json.dumps(), requests, etc. work.
+        """
+        if self.embed_mode:
+            return self._gen_pydict_lit(e)
         r = self.fresh()
         self.emit(f"{r} = call ptr @py_object_new(i32 999)")
         for key_expr, val_expr in e.pairs:
@@ -1424,6 +1440,19 @@ class CodeGen:
                 v = self.coerce(vv, vt, vt if isinstance(vt, tuple) else ("obj", "unknown"))
                 self.emit(f"call void @py_object_set_obj(ptr {r}, ptr {kv}, ptr {v})")
         return r, getattr(e, "type", ("dict", STR, NONE))
+
+    def _gen_pydict_lit(self, e):
+        """Embed-mode dict literal: a real Python dict built via PyDict_New."""
+        # We declare a tiny glue helper: py_dict_new() -> PyObject*
+        r = self.fresh()
+        self.emit(f"{r} = call ptr @py_dict_new()")
+        for key_expr, val_expr in e.pairs:
+            kv, kt = self.gen_expr(key_expr)
+            kv = self.coerce(kv, kt, "pyobject")
+            vv, vt = self.gen_expr(val_expr)
+            vv = self.coerce(vv, vt, "pyobject")
+            self.emit(f"call void @py_dict_setitem(ptr {r}, ptr {kv}, ptr {vv})")
+        return r, getattr(e, "type", ("dict", "pyobject", "pyobject"))
 
     def gen_list_lit(self, e):
         r = self.fresh()
