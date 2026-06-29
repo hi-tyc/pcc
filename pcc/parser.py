@@ -88,6 +88,8 @@ class Parser:
             return [self.parse_for()]
         if self.at_kw("def"):
             return [self.parse_funcdef()]
+        if self.at_kw("async"):
+            return [self.parse_async_stmt()]
         if self.at_kw("class"):
             return [self.parse_classdef()]
         if self.at_kw("import"):
@@ -229,7 +231,7 @@ class Parser:
             orelse = self.parse_suite()
         return A.While(cond, body, orelse, t.line)
 
-    def parse_for(self):
+    def parse_for(self, is_async=False):
         t = self.advance()
         # Support tuple unpacking: for a, b in ... or for (a, b) in ...
         var = self._parse_for_target()
@@ -240,7 +242,7 @@ class Parser:
         if self.at_kw("else"):
             self.advance()
             orelse = self.parse_suite()
-        return A.For(var, iterable, body, orelse, t.line)
+        return A.For(var, iterable, body, orelse, t.line, is_async=is_async)
 
     def _parse_for_target(self):
         """Parse a for-loop target. Returns a list of (str | list).
@@ -272,7 +274,7 @@ class Parser:
             return inner
         return self.expect(T.IDENTIFIER).value
 
-    def parse_funcdef(self):
+    def parse_funcdef(self, is_async=False):
         t = self.advance()  # 'def'
         name = self.expect(T.IDENTIFIER).value
         self.expect(T.LPAREN, "'('")
@@ -287,7 +289,19 @@ class Parser:
                 self._parse_param(params, defaults)
         self.expect(T.RPAREN, "')'")
         body = self.parse_suite()
-        return A.FuncDef(name, params, body, t.line, defaults=defaults)
+        return A.FuncDef(name, params, body, t.line, defaults=defaults, is_async=is_async)
+
+    def parse_async_stmt(self):
+        """`async def` / `async for` / `async with` — dispatch on the next keyword."""
+        t = self.advance()  # 'async'
+        if self.at_kw("def"):
+            return self.parse_funcdef(is_async=True)
+        if self.at_kw("for"):
+            return self.parse_for(is_async=True)
+        if self.at_kw("with"):
+            return self.parse_with(is_async=True)
+        # async expression form: `async (a if cond else b)` etc. — uncommon
+        raise ParseError("expected 'def', 'for', or 'with' after 'async'", t.line)
 
     def _parse_param(self, params, defaults):
         pname = self.expect(T.IDENTIFIER).value
@@ -340,7 +354,7 @@ class Parser:
         self.expect(T.NEWLINE, "newline")
         return A.ImportFrom(module, names, t.line)
 
-    def parse_with(self):
+    def parse_with(self, is_async=False):
         t = self.advance()  # 'with'
         items = []
         while True:
@@ -354,7 +368,7 @@ class Parser:
                 break
             self.advance()
         body = self.parse_suite()
-        return A.With(items, body, t.line)
+        return A.With(items, body, t.line, is_async=is_async)
 
     def parse_try(self):
         t = self.advance()  # 'try'
@@ -487,6 +501,10 @@ class Parser:
             op = t.value
             operand = self.parse_unary()
             return A.UnaryOp(op, operand, t.line)
+        if self.at_kw("await"):
+            t = self.advance()
+            value = self.parse_unary()
+            return A.Await(value, t.line)
         return self.parse_power()
 
     def parse_power(self):

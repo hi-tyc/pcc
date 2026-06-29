@@ -74,6 +74,28 @@ class Call(Node):
         self.kwargs = kwargs or {}  # name -> expr (used by print sep/end)
 
 
+class Await(Node):
+    """`await expr` — suspend the coroutine until expr yields a value.
+
+    In our compiled state machine, this becomes: drive `expr`'s
+    __await__() iterator and substitute the yielded value as the result.
+    """
+    def __init__(self, value, line=0):
+        super().__init__(line)
+        self.value = value
+
+
+class Yield(Node):
+    """`yield expr` / `yield` — used by async generators and generators.
+
+    In our compiled state machine, this becomes: produce a value to the
+    caller, suspend, and resume on the next send().
+    """
+    def __init__(self, value=None, line=0):
+        super().__init__(line)
+        self.value = value
+
+
 class IfExp(Node):
     """Ternary: a if cond else b."""
     def __init__(self, cond, then, else_, line=0):
@@ -234,21 +256,23 @@ class While(Node):
 
 class For(Node):
     """for var in range(...): body"""
-    def __init__(self, var, iterable, body, orelse, line=0):
+    def __init__(self, var, iterable, body, orelse, line=0, is_async=False):
         super().__init__(line)
         self.var = var
         self.iterable = iterable
         self.body = body
         self.orelse = orelse
+        self.is_async = is_async  # True for `async for`
 
 
 class FuncDef(Node):
-    def __init__(self, name, params, body, line=0, defaults=None):
+    def __init__(self, name, params, body, line=0, defaults=None, is_async=False):
         super().__init__(line)
         self.name = name
         self.params = params  # list of str
         self.body = body
         self.defaults = defaults or {}  # param_name -> default_expr
+        self.is_async = is_async  # True for `async def`
 
 
 class ClassDef(Node):
@@ -301,11 +325,12 @@ class Global(Node):
 
 class With(Node):
     """with item [as var]: body"""
-    def __init__(self, items, body, line=0):
+    def __init__(self, items, body, line=0, is_async=False):
         super().__init__(line)
         # items: list of (expr, var_name_or_None)
         self.items = items
         self.body = body
+        self.is_async = is_async  # True for `async with`
 
 
 class Try(Node):

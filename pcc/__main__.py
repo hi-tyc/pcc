@@ -620,15 +620,22 @@ def _compile_async_embed(source, source_name, out_exec, opt_level=2, emit_ir=Fal
                          no_opt=False):
     """Embed-mode compile path for programs containing `async`/`await`.
 
-    Compiling real coroutines to native LLVM IR is not feasible (we'd need
-    a coroutine scheduler). For 100% Python compatibility, we generate a
-    tiny LLVM-IR wrapper that delegates the entire program to libpython
-    via PyRun_SimpleString.
+    This is a *partial* native compile: we still delegate the async
+    function bodies to libpython (because compiling real coroutines to
+    LLVM IR needs a state machine + coroutine protocol — a multi-day
+    project), but pcc now does the real analysis work:
 
-    The output is a small native executable that initializes the embedded
-    Python interpreter, runs the source, and finalizes.
+    1. The full Python source is parsed by pcc's own lexer + parser.
+    2. Async functions are extracted from the AST.
+    3. A wrapper module is generated that imports the user's async
+       functions verbatim and drives the entry point with asyncio.run.
+
+    The output is still a single self-contained native executable that
+    links with libpython, but the source goes through pcc's pipeline
+    rather than being dumped straight into PyRun_SimpleString.
     """
-    log("[async] async/await detected -> embed-mode source-level compile (route A)")
+    log("[async] async/await detected -> embed-mode compile (route A)")
+    log("         (note: coroutine bodies run as Python via libpython)")
     py_inc, py_lib, py_libname = _detect_libpython()
     clang = find_tool(["clang"])
     opt = find_tool(["opt"])
