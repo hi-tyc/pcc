@@ -1,6 +1,9 @@
 """Test new compiler features."""
 import math
 import string
+import os
+import sys
+import json
 
 # Test math module
 print("=== Math Module ===")
@@ -63,3 +66,22 @@ print(f"Next year: {age + 1}")
 print(f"Pi: {3.14159:.2f}")
 print(f"Hex: {255:#x}")
 print(f"Aligned: {'hi':>10}")
+
+# Test sorted with key parameter
+print("=== Sorted with key ===")
+words = ["hello", "hi", "world", "a", "ab"]
+print(sorted(words, key=len))
+
+# Test os, sys, json
+print("=== os ===")
+print(os.getcwd())
+print(os.getenv("HOME"))
+print("=== sys ===")
+print(sys.version)
+print("=== json ===")
+print(json.dumps("hello"))
+print(json.dumps(42))
+print(json.dumps(3.14))
+print(json.dumps([1, 2, 3]))
+print(json.dumps(["a", "b"]))
+print(json.dumps(None))

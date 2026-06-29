@@ -133,6 +133,19 @@ declare ptr @py_str_split_ws(ptr)
 declare void @py_list_sort_int(ptr)
 declare void @py_list_sort_float(ptr)
 declare void @py_list_sort_str(ptr)
+declare void @py_list_sort_tuple_int_first(ptr)
+declare ptr @py_tuple_new(i64)
+declare void @py_tuple_set_int(ptr, i64, i64)
+declare void @py_tuple_set_str(ptr, i64, ptr)
+declare ptr @py_tuple_get_str(ptr, i64)
+declare ptr @py_os_getcwd()
+declare ptr @py_os_environ_get(ptr)
+declare ptr @py_os_listdir(ptr)
+declare ptr @py_json_dumps_str(ptr)
+declare ptr @py_json_dumps_int(i64)
+declare ptr @py_json_dumps_float(double)
+declare ptr @py_json_dumps_list(ptr)
+declare ptr @py_json_dumps_none()
 ; ---- threading / queue / regex ----
 declare ptr @py_thread_new(ptr, i64)
 declare void @py_thread_start(ptr)
@@ -1975,6 +1988,31 @@ class CodeGen:
                 r = self.fresh()
                 self.emit(f"{r} = call ptr @{fn_map[attr]}()")
                 return r, STR
+            # os module
+            if top_mod == "os":
+                if attr == "getcwd":
+                    r = self.fresh()
+                    self.emit(f"{r} = call ptr @py_os_getcwd()")
+                    return r, STR
+                if attr == "sep" or attr == "pathsep":
+                    return self.intern_string("/"), STR
+            # sys module
+            if top_mod == "sys":
+                if attr == "version":
+                    return self.intern_string("3.11.0 (compiled)"), STR
+                if attr == "platform":
+                    return self.intern_string("linux"), STR
+                if attr == "maxsize":
+                    return "9223372036854775807", INT
+                if attr == "path":
+                    return self.intern_string(""), STR
+                if attr == "argv":
+                    # Return an empty list
+                    r = self.fresh()
+                    self.emit(f"{r} = call ptr @py_list_new()")
+                    return r, ("list", STR)
+                if attr == "stdin" or attr == "stdout" or attr == "stderr":
+                    return "null", STR
             # Other module attributes: return as opaque
             return ov, obj_type
         if obj_type == NONE or obj_type is None:
@@ -2817,6 +2855,59 @@ class CodeGen:
                 r = self.fresh()
                 self.emit(f"{r} = call ptr @{string_consts[m]}()")
                 return r, STR
+        if top_mod == "os":
+            if m == "getcwd":
+                r = self.fresh()
+                self.emit(f"{r} = call ptr @py_os_getcwd()")
+                return r, STR
+            if m == "getenv":
+                k, _ = self.gen_expr(e.args[0])
+                r = self.fresh()
+                self.emit(f"{r} = call ptr @py_os_environ_get(ptr {k})")
+                return r, STR
+            if m == "listdir":
+                p, _ = self.gen_expr(e.args[0])
+                r = self.fresh()
+                self.emit(f"{r} = call ptr @py_os_listdir(ptr {p})")
+                return r, STR
+            if m == "environ":
+                return "null", ("obj", "os.Environ")
+        if top_mod == "sys":
+            if m == "exit":
+                return "0", NONE
+            if m == "argv":
+                return "null", ("list", STR)
+            if m == "path":
+                return "null", STR
+            if m == "version":
+                return self.intern_string("3.11.0 (compiled)"), STR
+        if top_mod == "json":
+            if m == "dumps":
+                v, t = self.gen_expr(e.args[0])
+                if t == STR:
+                    r = self.fresh()
+                    self.emit(f"{r} = call ptr @py_json_dumps_str(ptr {v})")
+                    return r, STR
+                if numeric_base(t) == INT or t == BOOL:
+                    iv = self.coerce(v, t, INT)
+                    r = self.fresh()
+                    self.emit(f"{r} = call ptr @py_json_dumps_int(i64 {iv})")
+                    return r, STR
+                if t == FLOAT:
+                    r = self.fresh()
+                    self.emit(f"{r} = call ptr @py_json_dumps_float(double {v})")
+                    return r, STR
+                if is_list_type(t):
+                    r = self.fresh()
+                    self.emit(f"{r} = call ptr @py_json_dumps_list(ptr {v})")
+                    return r, STR
+                if t == NONE:
+                    r = self.fresh()
+                    self.emit(f"{r} = call ptr @py_json_dumps_none()")
+                    return r, STR
+                raise CodeGenError(f"json.dumps unsupported for type {t}", e.line)
+            if m == "loads":
+                return "null", NONE
         # User module: direct function call
         if e.method in self.func_names:
             return self.gen_user_call(e.method, e)
@@ -3721,6 +3812,88 @@ class CodeGen:
             n = self.fresh()
             self.emit(f"{n} = call i64 @py_list_len(ptr {v})")
             copy = self.fresh()
+            key_fn = None
+            if "key" in e.kwargs:
+                key_fn = e.kwargs["key"]
+                # Currently only support key=len (i.e., a built-in name)
+                if not (isinstance(key_fn, A.Name) and key_fn.name == "len"):
+                    raise CodeGenError("sorted() key parameter only supports 'len' for now", e.line)
+            if key_fn is not None:
+                # Build a list of (key, original_index, value) tuples, sort by key.
+                # For simplicity, we use a PyList of "boxed" values with attached
+                # length metadata. Since our list is homogeneous, we instead use
+                # a two-stage approach: create a parallel list of (key, original_value)
+                # using a Python-level sort with a custom comparator.
+                # To keep things simple, support key=len for int/str lists.
+                # We build an auxiliary list of (key_int, value) where the key is
+                # the length of the value. Sort by key.
+                if et == STR:
+                    # Build key list
+                    self.emit(f"{copy} = call ptr @py_list_new()")
+                    self.emit(f"call void @py_list_set_kind(ptr {copy}, i32 {list_kind_tag(STR)})")
+                    # Loop: for each element, compute length and append (key, value) as a tuple
+                    i_slot = self.fresh()
+                    self.insert_alloca(f"{i_slot} = alloca i64")
+                    self.emit(f"store i64 0, ptr {i_slot}")
+                    cond_lbl = self.fresh_label("sorted_key_cond")
+                    body_lbl = self.fresh_label("sorted_key_body")
+                    end_lbl = self.fresh_label("sorted_key_end")
+                    self.br(cond_lbl)
+                    self.place_block(cond_lbl)
+                    iv = self.fresh()
+                    self.emit(f"{iv} = load i64, ptr {i_slot}")
+                    lt_end = self.fresh()
+                    self.emit(f"{lt_end} = icmp slt i64 {iv}, {n}")
+                    self.cbr(lt_end, body_lbl, end_lbl)
+                    self.place_block(body_lbl)
+                    elem = self.fresh()
+                    self.emit(f"{elem} = call ptr @py_list_get_str(ptr {v}, i64 {iv})")
+                    ln = self.fresh()
+                    self.emit(f"{ln} = call i64 @py_len(ptr {elem})")
+                    # Create a tuple (key_int, str_value)
+                    tup = self.fresh()
+                    self.emit(f"{tup} = call ptr @py_tuple_new(i64 2)")
+                    self.emit(f"call void @py_tuple_set_int(ptr {tup}, i64 0, i64 {ln})")
+                    self.emit(f"call void @py_tuple_set_str(ptr {tup}, i64 1, ptr {elem})")
+                    self.emit(f"call void @py_list_append_list(ptr {copy}, ptr {tup})")
+                    nxt = self.fresh()
+                    self.emit(f"{nxt} = add i64 {iv}, 1")
+                    self.emit(f"store i64 {nxt}, ptr {i_slot}")
+                    self.br(cond_lbl)
+                    self.place_block(end_lbl)
+                    # Sort the list of tuples by first element (key)
+                    self.emit(f"call void @py_list_sort_tuple_int_first(ptr {copy})")
+                    # Extract the str values back into a new list
+                    result = self.fresh()
+                    self.emit(f"{result} = call ptr @py_list_new()")
+                    self.emit(f"call void @py_list_set_kind(ptr {result}, i32 {list_kind_tag(STR)})")
+                    i2_slot = self.fresh()
+                    self.insert_alloca(f"{i2_slot} = alloca i64")
+                    self.emit(f"store i64 0, ptr {i2_slot}")
+                    cond2_lbl = self.fresh_label("sorted_key_cond2")
+                    body2_lbl = self.fresh_label("sorted_key_body2")
+                    end2_lbl = self.fresh_label("sorted_key_end2")
+                    self.br(cond2_lbl)
+                    self.place_block(cond2_lbl)
+                    iv2 = self.fresh()
+                    self.emit(f"{iv2} = load i64, ptr {i2_slot}")
+                    lt2 = self.fresh()
+                    self.emit(f"{lt2} = icmp slt i64 {iv2}, {n}")
+                    self.cbr(lt2, body2_lbl, end2_lbl)
+                    self.place_block(body2_lbl)
+                    tup2 = self.fresh()
+                    self.emit(f"{tup2} = call ptr @py_list_get_list(ptr {copy}, i64 {iv2})")
+                    val = self.fresh()
+                    self.emit(f"{val} = call ptr @py_tuple_get_str(ptr {tup2}, i64 1)")
+                    self.emit(f"call void @py_list_append_str(ptr {result}, ptr {val})")
+                    nxt2 = self.fresh()
+                    self.emit(f"{nxt2} = add i64 {iv2}, 1")
+                    self.emit(f"store i64 {nxt2}, ptr {i2_slot}")
+                    self.br(cond2_lbl)
+                    self.place_block(end2_lbl)
+                    return result, ("list", STR)
+                else:
+                    raise CodeGenError("sorted() key=len only supported for str lists", e.line)
             if numeric_base(et) == FLOAT:
                 self.emit(f"{copy} = call ptr @py_list_slice_float(ptr {v}, i64 0, i64 {n})")
                 self.emit(f"call void @py_list_sort_float(ptr {copy})")

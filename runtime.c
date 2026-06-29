@@ -793,6 +793,183 @@ void py_list_sort_str(PyList *l) {
         qsort(l->data, (size_t)l->length, sizeof(const char *), cmp_str);
 }
 
+/* ---- Tuple support ---- */
+typedef struct {
+    void **data;       /* array of typed element pointers */
+    long length;
+    int *kinds;        /* per-element kind: 0=int, 1=float, 2=str, 3=bool, 4=list */
+} PyTuple;
+
+PyTuple *py_tuple_new(long n) {
+    PyTuple *t = (PyTuple *)malloc(sizeof(PyTuple));
+    t->length = n;
+    t->data = (void **)calloc((size_t)n, sizeof(void *));
+    t->kinds = (int *)calloc((size_t)n, sizeof(int));
+    return t;
+}
+
+void py_tuple_set_int(PyTuple *t, long i, long v) {
+    long *p = (long *)malloc(sizeof(long));
+    *p = v;
+    t->data[i] = p;
+    t->kinds[i] = 0;
+}
+
+void py_tuple_set_str(PyTuple *t, long i, const char *v) {
+    char *p = strdup(v);
+    t->data[i] = p;
+    t->kinds[i] = 2;
+}
+
+const char *py_tuple_get_str(PyTuple *t, long i) {
+    return (const char *)t->data[i];
+}
+
+/* Sort a list of PyTuple* whose first element is an int and the rest are
+   values to keep aligned. The list is itself a PyList*. */
+static int cmp_tuple_int_first(const void *a, const void *b) {
+    PyTuple *ta = *(PyTuple **)a, *tb = *(PyTuple **)b;
+    long la = *(long *)ta->data[0], lb = *(long *)tb->data[0];
+    return (la > lb) - (la < lb);
+}
+void py_list_sort_tuple_int_first(PyList *l) {
+    if (l->length > 1)
+        qsort(l->data, (size_t)l->length, sizeof(PyTuple *), cmp_tuple_int_first);
+}
+
+/* ---- os module ---- */
+#include <unistd.h>
+const char *py_os_getcwd(void) {
+    char buf[4096];
+    if (getcwd(buf, sizeof buf)) return strdup(buf);
+    return strdup("");
+}
+const char *py_os_environ_get(const char *name) {
+    const char *v = getenv(name);
+    return v ? strdup(v) : strdup("");
+}
+long py_os_environ_count(void) {
+    extern char **environ;
+    long n = 0;
+    while (environ[n]) n++;
+    return n;
+}
+const char *py_os_environ_name(long i) {
+    extern char **environ;
+    const char *e = environ[i];
+    const char *eq = strchr(e, '=');
+    if (!eq) return strdup(e);
+    long n = eq - e;
+    char *r = (char *)malloc(n + 1);
+    memcpy(r, e, n);
+    r[n] = '\0';
+    return r;
+}
+const char *py_os_environ_value(long i) {
+    extern char **environ;
+    const char *e = environ[i];
+    const char *eq = strchr(e, '=');
+    return strdup(eq ? eq + 1 : "");
+}
+const char *py_os_listdir(const char *path) {
+    /* Return newline-separated entries; simplified: use `ls`-style fallback. */
+    char cmd[1024];
+    snprintf(cmd, sizeof cmd, "ls -1 %s 2>/dev/null", path);
+    FILE *f = popen(cmd, "r");
+    if (!f) return strdup("");
+    size_t cap = 256, len = 0;
+    char *buf = (char *)malloc(cap);
+    char line[256];
+    while (fgets(line, sizeof line, f)) {
+        size_t l = strlen(line);
+        if (l > 0 && line[l - 1] == '\n') line[--l] = '\0';
+        while (len + l + 2 >= cap) { cap *= 2; buf = realloc(buf, cap); }
+        memcpy(buf + len, line, l);
+        buf[len + l] = '\n';
+        len += l + 1;
+    }
+    buf[len] = '\0';
+    pclose(f);
+    return buf;
+}
+
+/* ---- sys module ---- */
+int py_sys_argc(void) { return 1; /* placeholder; updated in main */ }
+const char *py_sys_argv(int i) { return ""; /* placeholder */ }
+
+/* ---- json module ---- */
+const char *py_json_dumps_str(const char *s) {
+    size_t n = strlen(s);
+    char *r = (char *)malloc(n * 6 + 8);
+    char *p = r;
+    *p++ = '"';
+    for (size_t i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)s[i];
+        if (c == '"' || c == '\\') { *p++ = '\\'; *p++ = c; }
+        else if (c == '\n') { *p++ = '\\'; *p++ = 'n'; }
+        else if (c == '\r') { *p++ = '\\'; *p++ = 'r'; }
+        else if (c == '\t') { *p++ = '\\'; *p++ = 't'; }
+        else if (c < 0x20) { p += sprintf(p, "\\u%04x", c); }
+        else *p++ = c;
+    }
+    *p++ = '"';
+    *p = '\0';
+    return r;
+}
+const char *py_json_dumps_int(long v) {
+    char *r = (char *)malloc(32);
+    snprintf(r, 32, "%ld", v);
+    return r;
+}
+const char *py_json_dumps_float(double v) {
+    char *r = (char *)malloc(64);
+    snprintf(r, 64, "%g", v);
+    return r;
+}
+const char *py_json_dumps_bool(int b) {
+    return strdup(b ? "true" : "false");
+}
+const char *py_json_dumps_none(void) { return strdup("null"); }
+const char *py_json_dumps_list(PyList *l);
+const char *py_json_dumps_list(PyList *l) {
+    size_t cap = 256, len = 0;
+    char *buf = (char *)malloc(cap);
+    buf[len++] = '[';
+    for (long i = 0; i < l->length; i++) {
+        if (i > 0) {
+            while (len + 2 >= cap) { cap *= 2; buf = realloc(buf, cap); }
+            buf[len++] = ',';
+        }
+        const char *item = NULL;
+        char buf2[64];
+        switch (l->elem_kind) {
+            case LE_INT: snprintf(buf2, sizeof buf2, "%ld", ((long *)l->data)[i]); item = buf2; break;
+            case LE_FLOAT: snprintf(buf2, sizeof buf2, "%g", ((double *)l->data)[i]); item = buf2; break;
+            case LE_BOOL: item = ((long *)l->data)[i] ? "true" : "false"; break;
+            case LE_STR: item = ((const char **)l->data)[i]; break;
+            default: item = "null"; break;
+        }
+        if (l->elem_kind == LE_STR) {
+            const char *q = py_json_dumps_str(item);
+            size_t ql = strlen(q);
+            while (len + ql + 1 >= cap) { cap *= 2; buf = realloc(buf, cap); }
+            memcpy(buf + len, q, ql); len += ql; free((void *)q);
+        } else {
+            size_t il = strlen(item);
+            while (len + il + 1 >= cap) { cap *= 2; buf = realloc(buf, cap); }
+            memcpy(buf + len, item, il); len += il;
+        }
+    }
+    while (len + 2 >= cap) { cap *= 2; buf = realloc(buf, cap); }
+    buf[len++] = ']';
+    buf[len] = '\0';
+    return buf;
+}
+const char *py_json_dumps(PyList *l) {
+    if (!l) return strdup("[]");
+    return py_json_dumps_list(l);
+}
+
 /* ---- time ---- */
 double py_time_perf_counter(void) {
     struct timeval tv;
