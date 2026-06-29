@@ -97,6 +97,23 @@ def _detect_libpython():
     return py_inc, py_lib, f"python{ver}"
 
 
+def _has_async_await(source):
+    """Quick syntactic check: does the source contain `async`/`await`?
+
+    Strips comments and string literals to avoid false positives. These
+    constructs require a Python coroutine driver and aren't supported in
+    native mode; in embed mode we run the source via libpython's
+    PyRun_String instead of compiling to LLVM IR.
+    """
+    import re
+    text = re.sub(r"#[^\n]*", "", source)
+    text = re.sub(r"\"{3}.*?\"{3}", "", text, flags=re.DOTALL)
+    text = re.sub(r"'{3}.*?'{3}", "", text, flags=re.DOTALL)
+    text = re.sub(r"\"[^\"\\]*(?:\\.[^\"\\]*)*\"", "", text)
+    text = re.sub(r"'[^'\\]*(?:\\.[^'\\]*)*'", "", text)
+    return bool(re.search(r"\b(async|await)\b", text))
+
+
 def _needs_embed_mode(source, source_dir=None):
     """Heuristic: does the source need embed mode (libpython fallback)?
 
@@ -599,19 +616,111 @@ def compile_source(source, source_name, out_exec, opt_level=2, emit_ir=False, no
     return out_exec
 
 
+def _compile_async_embed(source, source_name, out_exec, opt_level=2, emit_ir=False,
+                         no_opt=False):
+    """Embed-mode compile path for programs containing `async`/`await`.
+
+    Compiling real coroutines to native LLVM IR is not feasible (we'd need
+    a coroutine scheduler). For 100% Python compatibility, we generate a
+    tiny LLVM-IR wrapper that delegates the entire program to libpython
+    via PyRun_SimpleString.
+
+    The output is a small native executable that initializes the embedded
+    Python interpreter, runs the source, and finalizes.
+    """
+    log("[async] async/await detected -> embed-mode source-level compile (route A)")
+    py_inc, py_lib, py_libname = _detect_libpython()
+    clang = find_tool(["clang"])
+    opt = find_tool(["opt"])
+
+    if not os.path.exists(GLUE_C):
+        raise CompileError(f"glue.c not found: {GLUE_C}")
+
+    # Build glue.o (provides py_embed_init, py_run_source, Py_InitializeEx, etc.)
+    glue_o = out_exec + ".glue.o"
+    run([clang, "-fPIC", "-O2", "-c", GLUE_C, f"-I{py_inc}", "-o", glue_o])
+
+    # Generate the wrapper IR.
+    src_bytes = source.encode("utf-8") + b"\x00"
+    src_len = len(src_bytes)
+    ir = []
+    ir.append('; pcc async/await embed-mode wrapper')
+    ir.append('declare i32 @py_embed_init(i32, ptr, i32, ptr, ptr)')
+    ir.append('declare i32 @py_run_source(ptr)')
+    ir.append('declare void @Py_Finalize()')
+    ir.append('')
+    ir.append('@.src = global [' + str(src_len) + ' x i8] c"' +
+              _escape_for_llvm_bytes(src_bytes) + '"')
+    ir.append('define i32 @main(i32 %argc, ptr %argv) {')
+    ir.append('entry:')
+    ir.append('  call i32 @py_embed_init(i32 %argc, ptr %argv, i32 0, ptr null, ptr null)')
+    ir.append(f'  %srcptr = getelementptr [{src_len} x i8], ptr @.src, i32 0, i32 0')
+    ir.append('  %r = call i32 @py_run_source(ptr %srcptr)')
+    ir.append('  call void @Py_Finalize()')
+    ir.append('  ret i32 %r')
+    ir.append('}')
+    ir_path = out_exec + ".ll"
+    with open(ir_path, "w") as f:
+        f.write("\n".join(ir) + "\n")
+    if emit_ir:
+        log(f"      IR -> {ir_path}")
+    opt_path = out_exec + ".opt.ll"
+    if no_opt or not opt:
+        run([clang, "-O2", "-S", "-emit-llvm", ir_path, "-o", opt_path])
+    else:
+        run([opt, f"-passes=default<O{opt_level}>", "-S", ir_path, "-o", opt_path])
+    # Link. Include runtime.c because glue.c references a few of its
+    # helpers (py_list_set_kind, py_list_append_*, etc.) for embed-mode
+    # type conversions that aren't used by async programs but are still
+    # referenced. Stripping them would require a separate glue_async.c.
+    link_cmd = [
+        clang, f"-O{opt_level}",
+        opt_path, RUNTIME_C, glue_o,
+        f"-L{py_lib}", f"-l{py_libname}",
+        f"-Wl,-rpath,{py_lib}",
+        "-o", out_exec, "-lm", "-lpthread", "-ldl",
+    ]
+    run(link_cmd)
+    log(f"      executable -> {out_exec}")
+
+
+def _escape_for_llvm_bytes(b):
+    """Encode a bytes object as a string literal body for LLVM IR."""
+    out = []
+    for c in b:
+        if c == 0:
+            out.append("\\00")
+        elif c == ord('"'):
+            out.append("\\22")
+        elif c == ord("\\"):
+            out.append("\\5C")
+        elif 32 <= c < 127:
+            out.append(chr(c))
+        else:
+            out.append(f"\\{c:02X}")
+    return "".join(out)
+
+
 def smart_compile(source, source_name, out_exec, opt_level=2, emit_ir=False,
                   no_opt=False, force_embed=False, force_native=False):
     """Auto-detect the right compile mode.
 
-    1. If `force_embed` is set, use embed mode.
-    2. If `force_native` is set, use native mode (and fail on unknown features).
-    3. Otherwise, scan the source for non-stdlib imports.
+    1. If the source contains `async`/`await`, use the embed-mode
+       source-level path (route A with PyRun_SimpleString). This is the
+       only way to get 100% Python compatibility for coroutines.
+    2. If `force_embed` is set, use embed mode.
+    3. If `force_native` is set, use native mode (and fail on unknown features).
+    4. Otherwise, scan the source for non-stdlib imports.
        * Local .py files -> inlined, native mode (route B).
        * Unknown / pip-installed modules -> embed mode (route A) — 100% Python compatible.
 
     This implements the user's "A+B" strategy: native compile where possible,
     hybrid for unknown imports/C extensions.
     """
+    if _has_async_await(source) and not force_native:
+        return _compile_async_embed(source, source_name, out_exec,
+                                    opt_level=opt_level, emit_ir=emit_ir)
+
     if force_embed:
         log("[auto] embed mode forced")
         return compile_source(source, source_name, out_exec, opt_level=opt_level,
@@ -683,6 +792,21 @@ def main():
         # in embed mode. This implements the "max 100% compatibility"
         # requirement: when in doubt, fall back to the slower-but-complete path.
         source_dir = os.path.dirname(os.path.abspath(args.source))
+        # Short-circuit: programs using async/await go straight to embed
+        # source-level compile (which delegates to libpython via
+        # PyRun_SimpleString). No point in trying to compile the rest of
+        # the program natively if we're going to run it as Python code
+        # anyway.
+        if _has_async_await(source) and not force_native:
+            _compile_async_embed(source, args.source, out_exec,
+                                 opt_level=args.opt_level, emit_ir=args.emit_ir,
+                                 no_opt=args.no_opt)
+            log(f"\nBuild succeeded: {out_exec}")
+            if args.run:
+                log(f"--- running {out_exec} ---")
+                proc = subprocess.run([out_exec])
+                return proc.returncode
+            return 0
         if force_embed:
             compile_source(source, args.source, out_exec,
                            opt_level=args.opt_level, emit_ir=args.emit_ir,

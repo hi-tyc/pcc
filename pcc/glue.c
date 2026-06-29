@@ -373,9 +373,20 @@ PyObject *py_str_incref(const char *s) {
     return PyUnicode_FromString(s);
 }
 
-/* ====== run source ====== */
-int py_run_string(const char *src) {
-    return PyRun_SimpleString(src ? src : "");
+/* ====== run a Python source string via libpython ====== */
+/* Used as a 100%-compatibility fallback for programs containing `async` or
+   `await`. Compiling real coroutines to native LLVM IR is not feasible, so
+   we delegate the whole program to the embedded CPython interpreter. */
+int py_run_source(const char *src) {
+    int rc = -1;
+    if (PyRun_SimpleStringFlags(src, NULL) == 0) {
+        rc = 0;
+    }
+    if (PyErr_Occurred()) {
+        PyErr_Print();
+        if (rc == 0) rc = 1;
+    }
+    return rc;
 }
 
 /* ====== hybrid: convert a PyObject* iterable to a native PyList* of int ====== */

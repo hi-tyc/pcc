@@ -152,6 +152,31 @@ sum: 15
 mean: 3.0
 ```
 
+### Async / await (route A)
+
+`async def`, `await`, `async for`, `async with` and async generators are
+supported by automatically routing the whole program through libpython's
+`PyRun_SimpleString`. The compiler still produces a standalone native
+executable — the source just runs as Python bytecode inside it.
+
+```python
+# async_demo.py
+import asyncio
+async def fetch(n):
+    await asyncio.sleep(0.01)
+    return n * 2
+async def main():
+    vals = await asyncio.gather(*[fetch(i) for i in range(5)])
+    print("values:", vals)
+asyncio.run(main())
+```
+
+```bash
+$ pcc async_demo.py -o async_demo --run
+[async] async/await detected -> embed-mode source-level compile (route A)
+values: [0, 2, 4, 6, 8]
+```
+
 ### Local file imports (auto-inlined)
 
 ```
@@ -263,6 +288,7 @@ interpreter dependency and is typically a few hundred KB.
 ### Anything else
 - Pip-installed C extensions (`numpy`, `pandas`, `requests`, …)
 - User modules not in our stdlib whitelist
+- **`async` / `await` / `async for` / `async with` / async generators**
 - …automatically fall back to embed mode.
 
 ## Installation Details

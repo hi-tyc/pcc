@@ -68,6 +68,7 @@ KEYWORDS = {
     "and", "or", "not", "import", "from", "as", "global", "nonlocal",
     "class", "is", "lambda", "try", "except", "finally", "raise",
     "with", "yield", "del", "assert",
+    "async", "await",    # Python 3.5+ coroutines (handled in embed mode only)
 }
 
 
