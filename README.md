@@ -269,7 +269,7 @@ interpreter dependency and is typically a few hundred KB.
 
 ### Prerequisites
 
-- **Python 3.8+**
+- **Python 3.7+**
 - **LLVM** (`opt` and `clang` in `$PATH`; LLVM 14+ recommended)
 - **libpython** development headers (only required for embed mode)
   - Debian/Ubuntu: `sudo apt install libpython3-dev`

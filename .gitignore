@@ -5,6 +5,10 @@ __pycache__/
 /tmp/
 .idea/
 cpython/
+build/
+dist/
+*.egg-info/
+*.egg-info/*
 samples/basic
 samples/functions
 samples/globals

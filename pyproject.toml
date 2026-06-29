@@ -8,7 +8,7 @@ version = "0.3.0"
 description = "Python-to-native compiler: compile .py to a standalone executable via LLVM."
 readme = "README.md"
 license = {file = "LICENSE"}
-requires-python = ">=3.8"
+requires-python = ">=3.7"
 authors = [
     {name = "hi-tyc", email = "hi-tyc@users.github.com"},
 ]
